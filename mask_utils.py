@@ -41,26 +41,93 @@ FIELD_KEYWORDS = {
 
 ALL_FIELDS = list(FIELD_KEYWORDS.keys())
 
+# Words that shouldn't be mistaken for a person's name after "all"
+# (e.g. "mask all fields" should NOT be read as a name "Fields")
+_ALL_STOPWORDS = {
+    "fields", "pii", "records", "data", "information", "details",
+    "aadhaar", "aadhar", "pan", "kyc", "documents", "entries",
+}
 
-def parse_text_instructions(text: str) -> dict:
-    """Simple keyword-matching parser for free-text instructions."""
+# Words that indicate the match should expand to the WHOLE ROW/LINE it's
+# found in (useful for tabular documents like bank statements), rather
+# than just the matched word itself.
+_ROW_SCOPE_WORDS = re.compile(
+    r'record|transaction|entr|statement|row|line|detail', re.I
+)
+
+
+def extract_custom_targets(text: str):
+    """
+    Pulls out specific names/terms the user wants masked wherever they
+    appear in the document (not just in a labelled field), e.g.:
+        "mask all Unnati's record"        -> [("Unnati", "row")]
+        "hide Rohan's transactions"       -> [("Rohan", "row")]
+        'redact "Acme Corp" entries'      -> [("Acme Corp", "row")]
+        "mask all Priya"                  -> [("Priya", "row")]
+    Returns a list of (term, mode) tuples where mode is "row" (mask the
+    whole line the term appears in) or "token" (mask just that word/phrase).
+    """
+    targets = []
+    scope = "row" if _ROW_SCOPE_WORDS.search(text) else "token"
+
+    # 1) Quoted terms always win — most explicit signal
+    for pat in (re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'")):
+        for m in pat.finditer(text):
+            term = m.group(1).strip()
+            if term and not term.lower().endswith("s"):  # skip stray "'s" captures
+                targets.append((term, scope))
+    if targets:
+        return targets
+
+    # 2) Possessive form: "Unnati's record", "Rohan Mehta's transactions"
+    m = re.search(
+        r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)\'s\s+"
+        r"(record|transaction|entr|detail|data|statement)", text
+    )
+    if m:
+        return [(m.group(1), "row")]
+
+    # 3) "record(s)/transactions of/for X"
+    m = re.search(
+        r'(?:record[s]?|transaction[s]?|entries)\s+(?:of|for)\s+'
+        r'([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)', text
+    )
+    if m:
+        return [(m.group(1), "row")]
+
+    # 4) "mask/hide/redact all X" where X is a capitalised word not a
+    #    known field keyword (e.g. "mask all Unnati")
+    m = re.search(r'\ball\s+([A-Z][a-zA-Z]+)\b', text)
+    if m and m.group(1).lower() not in _ALL_STOPWORDS:
+        return [(m.group(1), scope)]
+
+    return targets
+
+
+def parse_text_instructions(text: str):
+    """
+    Parses free-text instructions into:
+      - config: dict of standard field flags (aadhaar_number, dob, etc.)
+      - custom_targets: list of (term, mode) for arbitrary name/entity masking
+    """
     text_lower = text.lower()
     config = {k: False for k in FIELD_KEYWORDS}
 
     if any(w in text_lower for w in ["everything", "all fields", "all pii", "redact all"]):
-        return {k: True for k in FIELD_KEYWORDS}
+        config = {k: True for k in FIELD_KEYWORDS}
+    else:
+        if re.search(r'\bname\b', text_lower) and "aadhaar name" not in text_lower and "pan name" not in text_lower:
+            config["aadhaar_name"] = True
+            config["pan_name"] = True
 
-    if re.search(r'\bname\b', text_lower) and "aadhaar name" not in text_lower and "pan name" not in text_lower:
-        config["aadhaar_name"] = True
-        config["pan_name"] = True
+        for field, keywords in FIELD_KEYWORDS.items():
+            for kw in keywords:
+                if kw in text_lower:
+                    config[field] = True
+                    break
 
-    for field, keywords in FIELD_KEYWORDS.items():
-        for kw in keywords:
-            if kw in text_lower:
-                config[field] = True
-                break
-
-    return config
+    custom_targets = extract_custom_targets(text)
+    return config, custom_targets
 
 
 # ── Helpers ──
@@ -244,14 +311,79 @@ def get_credit_card_layout_bbox(page_img, page_num):
     return [(int(0.04 * img_w), int(0.30 * img_h), int(0.72 * img_w), int(0.41 * img_h))]
 
 
+# ── Custom name / entity masking (for free-form documents like bank statements) ──
+
+def _line_key(data, i):
+    """Tesseract groups OCR words by (block, paragraph, line) — this lets
+    us treat all words on the same printed line as one 'row'."""
+    return (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+
+
+def _line_bbox(data, i, img_w, img_h):
+    """Bounding box spanning every word on the same OCR line as token i."""
+    key = _line_key(data, i)
+    idxs = [j for j in range(len(data["text"]))
+            if data["text"][j].strip() and _line_key(data, j) == key]
+    if not idxs:
+        return None
+    x0 = min(data["left"][j] for j in idxs)
+    y0 = min(data["top"][j] for j in idxs)
+    x1 = max(data["left"][j] + data["width"][j] for j in idxs)
+    y1 = max(data["top"][j] + data["height"][j] for j in idxs)
+    return pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h)
+
+
+def _find_term_token_runs(data, term):
+    """Finds every place `term` (1 or more words) appears in the OCR'd
+    text, case-insensitively. Returns a list of index-lists, one per match."""
+    term_words = [w.strip(",.:;()").lower() for w in term.split() if w.strip()]
+    if not term_words:
+        return []
+    words = [t.strip(",.:;()").lower() for t in data["text"]]
+    n = len(term_words)
+    runs = []
+    for i in range(len(words) - n + 1):
+        if words[i:i + n] == term_words:
+            runs.append(list(range(i, i + n)))
+    return runs
+
+
+def find_custom_target_bboxes(data, img_w, img_h, term, mode="token"):
+    """
+    Locates every occurrence of `term` in the OCR'd page.
+    mode="token" -> mask just the matched word(s)
+    mode="row"   -> mask the entire printed line/row the match sits on
+                    (best for tabular data like bank statement transactions)
+    """
+    bboxes = []
+    for run in _find_term_token_runs(data, term):
+        if mode == "row":
+            bbox = _line_bbox(data, run[0], img_w, img_h)
+            if bbox:
+                bboxes.append(bbox)
+        else:
+            x0 = min(data["left"][j] for j in run)
+            y0 = min(data["top"][j] for j in run)
+            x1 = max(data["left"][j] + data["width"][j] for j in run)
+            y1 = max(data["top"][j] + data["height"][j] for j in run)
+            bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+    return bboxes
+
+
 # ── Page processor ──
 
-def process_page(page_img, page_num, config, log):
+def process_page(page_img, page_num, config, log, custom_targets=None):
     img_w, img_h = page_img.size
     masked = page_img.copy()
     draw = ImageDraw.Draw(masked)
     data = ocr_data(page_img)
     bboxes = []
+
+    for term, mode in (custom_targets or []):
+        found = find_custom_target_bboxes(data, img_w, img_h, term, mode=mode)
+        if found:
+            log.append(f"  matched '{term}' ({mode}) — {len(found)} occurrence(s) on this page")
+        bboxes += found
 
     if config.get("aadhaar_number"):
         bboxes += find_aadhaar_number_bboxes(data, img_w, img_h)
@@ -289,9 +421,13 @@ def process_page(page_img, page_num, config, log):
 
 # ── Public entry point ──
 
-def mask_pdf(input_pdf_path: str, output_pdf_path: str, config: dict) -> list:
+def mask_pdf(input_pdf_path: str, output_pdf_path: str, config: dict, custom_targets=None) -> list:
     """
     Runs the full pipeline: PDF -> images -> OCR + PII detection -> mask -> save PDF.
+    custom_targets: list of (term, mode) tuples for arbitrary name/entity
+    masking, e.g. [("Unnati", "row")] to black out every row mentioning
+    "Unnati" — useful for bank statements or any tabular document where the
+    fields you want masked aren't fixed labels like Aadhaar/PAN/DOB.
     Returns a list of log strings describing what was masked (useful for a
     frontend "activity log" panel, optional).
     """
@@ -299,7 +435,7 @@ def mask_pdf(input_pdf_path: str, output_pdf_path: str, config: dict) -> list:
     pages = convert_from_path(input_pdf_path, dpi=DPI)
     log.append(f"Converted PDF to {len(pages)} page image(s)")
 
-    masked_pages = [process_page(p, i, config, log) for i, p in enumerate(pages)]
+    masked_pages = [process_page(p, i, config, log, custom_targets) for i, p in enumerate(pages)]
 
     first = masked_pages[0].convert("RGB")
     rest = [p.convert("RGB") for p in masked_pages[1:]]

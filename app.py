@@ -35,15 +35,19 @@ def mask():
     if not file.filename.lower().endswith(".pdf"):
         return jsonify({"error": "Only PDF files are supported"}), 400
 
-    # Build the masking config: free-text instructions override checkboxes
+    # Checkbox selections are the base config; free-text instructions ADD
+    # to them — both standard fields it mentions (e.g. "also mask dob")
+    # and any custom name/entity it names (e.g. "mask all Unnati's record").
+    config = {field: request.form.get(field) == "on" for field in ALL_FIELDS}
     instructions = request.form.get("instructions", "").strip()
+    custom_targets = []
     if instructions:
-        config = parse_text_instructions(instructions)
-    else:
-        config = {field: request.form.get(field) == "on" for field in ALL_FIELDS}
+        text_config, custom_targets = parse_text_instructions(instructions)
+        for field in ALL_FIELDS:
+            config[field] = config[field] or text_config.get(field, False)
 
-    if not any(config.values()):
-        return jsonify({"error": "Select at least one field to mask"}), 400
+    if not any(config.values()) and not custom_targets:
+        return jsonify({"error": "Select at least one field, or describe what to mask"}), 400
 
     job_id = uuid.uuid4().hex
     input_path = os.path.join(UPLOAD_DIR, f"{job_id}.pdf")
@@ -52,7 +56,7 @@ def mask():
     file.save(input_path)
 
     try:
-        log = mask_pdf(input_path, output_path, config)
+        log = mask_pdf(input_path, output_path, config, custom_targets)
     except Exception as exc:
         return jsonify({"error": f"Masking failed: {exc}"}), 500
     finally:
