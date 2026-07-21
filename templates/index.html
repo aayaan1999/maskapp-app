@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Redactor — Mask sensitive document fields</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="grain"></div>
+
+<header class="topbar">
+  <div class="topbar__mark">
+    <span class="topbar__bracket">[</span>REDACTOR<span class="topbar__bracket">]</span>
+  </div>
+  <div class="topbar__meta">OCR-based document field masking</div>
+</header>
+
+<main class="layout">
+
+  <!-- LEFT: pitch + upload -->
+  <section class="panel panel--left">
+    <h1 class="headline">
+      Black out what<br>shouldn't travel.
+    </h1>
+    <p class="subhead">
+      Upload a scanned ID, PAN card, or statement. Pick the fields that
+      matter — Aadhaar, PAN, DOB, card numbers — and get back a PDF with
+      those fields permanently redacted. Nothing is stored after processing.
+    </p>
+
+    <form id="mask-form" class="form">
+      <div id="dropzone" class="dropzone">
+        <input type="file" id="file-input" name="file" accept="application/pdf" hidden>
+        <div class="dropzone__icon">＋</div>
+        <div class="dropzone__label">Drop a PDF here, or <span class="dropzone__browse">browse</span></div>
+        <div class="dropzone__filename" id="file-name"></div>
+      </div>
+
+      <div class="fields">
+        <div class="fields__legend">FIELDS TO MASK</div>
+        <div class="fields__grid">
+          {% for field in fields %}
+          <label class="field-toggle">
+            <input type="checkbox" name="{{ field }}" {% if field in ['aadhaar_number','aadhaar_name','pan_number','dob','credit_card_number'] %}checked{% endif %}>
+            <span class="field-toggle__box"></span>
+            <span class="field-toggle__label">{{ field.replace('_', ' ') }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="instructions">
+        <label for="instructions" class="instructions__legend">OR DESCRIBE IT IN PLAIN ENGLISH (adds to the checkboxes above)</label>
+        <textarea id="instructions" name="instructions" placeholder="e.g. mask all Unnati's record — or mask aadhaar number and dob"></textarea>
+      </div>
+
+      <button type="submit" id="submit-btn" class="btn-primary">
+        <span class="btn-primary__label">Mask document</span>
+        <span class="btn-primary__arrow">→</span>
+      </button>
+
+      <div id="status" class="status"></div>
+    </form>
+  </section>
+
+  <!-- RIGHT: live mock preview -->
+  <section class="panel panel--right">
+    <div class="preview">
+      <div class="preview__label">LIVE PREVIEW</div>
+      <div class="id-card">
+        <div class="id-card__header">
+          <div class="id-card__chip"></div>
+          <div class="id-card__title">SAMPLE ID DOCUMENT</div>
+        </div>
+
+        <div class="id-row">
+          <span class="id-row__label">Name</span>
+          <span class="id-row__value redact" data-field="aadhaar_name">RAVI KUMAR SHARMA</span>
+        </div>
+        <div class="id-row">
+          <span class="id-row__label">Aadhaar No.</span>
+          <span class="id-row__value redact" data-field="aadhaar_number">4521 8890 1123</span>
+        </div>
+        <div class="id-row">
+          <span class="id-row__label">PAN No.</span>
+          <span class="id-row__value redact" data-field="pan_number">ABCPK1234L</span>
+        </div>
+        <div class="id-row">
+          <span class="id-row__label">Date of Birth</span>
+          <span class="id-row__value redact" data-field="dob">14/03/1990</span>
+        </div>
+        <div class="id-row">
+          <span class="id-row__label">PAN Name</span>
+          <span class="id-row__value redact" data-field="pan_name">PRIYA SHARMA</span>
+        </div>
+        <div class="id-row">
+          <span class="id-row__label">Address</span>
+          <span class="id-row__value redact" data-field="address">221B, Sector 12, New Delhi</span>
+        </div>
+        <div class="id-row">
+          <span class="id-row__label">Phone</span>
+          <span class="id-row__value redact" data-field="phone_number">98765 43210</span>
+        </div>
+        <div class="id-row">
+          <span class="id-row__label">Email</span>
+          <span class="id-row__value redact" data-field="email">ravi.sharma@mail.com</span>
+        </div>
+        <div class="id-row">
+          <span class="id-row__label">Card No.</span>
+          <span class="id-row__value redact" data-field="credit_card_number">4111 2222 3333 4444</span>
+        </div>
+      </div>
+      <div class="preview__caption">Toggling a field bar-redacts it here — this is exactly what happens to your real PDF.</div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">Processed in memory · originals deleted immediately after masking</footer>
+
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
