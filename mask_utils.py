@@ -244,7 +244,8 @@ def find_name_bboxes(data, img_w, img_h, label=""):
             c = int(confs[i])
         except Exception:
             c = 0
-        if any(kw.lower() in t.lower() for kw in NAME_KEYWORDS) and c > 15:
+        # lower the label confidence threshold so weak OCR labels still trigger
+        if any(kw.lower() in t.lower() for kw in NAME_KEYWORDS) and c > 5:
             # search both before and after the label for name tokens
             name_tokens = []
             # look ahead
@@ -259,7 +260,7 @@ def find_name_bboxes(data, img_w, img_h, label=""):
                     break
             # if nothing ahead, look behind (some layouts put name before label)
             if not name_tokens:
-                for j in range(max(0, i - 3), i):
+                for j in range(max(0, i - 5), i):
                     nt = texts[j].strip()
                     if not nt:
                         continue
@@ -274,6 +275,24 @@ def find_name_bboxes(data, img_w, img_h, label=""):
                 x1 = max(data["left"][k] + data["width"][k] for k in name_tokens)
                 y1 = max(data["top"][k] + data["height"][k] for k in name_tokens)
                 bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+
+            # if still nothing, search the entire OCR line containing the label
+            if not name_tokens:
+                try:
+                    key = _line_key(data, i)
+                    # collect name-like tokens on same line, ordered by position
+                    line_idxs = [j for j in range(len(texts)) if _line_key(data, j) == key and is_name_token(texts[j])]
+                    if line_idxs:
+                        # pick up to 3 tokens closest to label
+                        line_idxs.sort(key=lambda j: abs(j - i))
+                        sel = sorted(line_idxs[:3])
+                        x0 = min(data["left"][k] for k in sel)
+                        y0 = min(data["top"][k] for k in sel)
+                        x1 = max(data["left"][k] + data["width"][k] for k in sel)
+                        y1 = max(data["top"][k] + data["height"][k] for k in sel)
+                        bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+                except Exception:
+                    pass
 
     # Fallback: if no name found but aadhaar_name requested, look for long uppercase sequences
     if not bboxes:
