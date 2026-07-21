@@ -317,6 +317,81 @@ def find_name_bboxes(data, img_w, img_h, label=""):
     return bboxes
 
 
+def find_aadhaar_name_bboxes(data, img_w, img_h):
+    texts = data["text"]
+    confs = data.get("conf", [])
+
+    aadhaar_boxes = find_aadhaar_number_bboxes(data, img_w, img_h)
+    if not aadhaar_boxes:
+        return []
+
+    def is_aadhaar_name_token(tok):
+        text = tok.strip().strip(',:')
+        if not text:
+            return False
+        if re.match(r'^\d+$', text):
+            return False
+        if text.lower() in {
+            "male", "female", "m", "f", "dob", "date", "birth", "year",
+            "month", "address", "addr", "uid", "uidai", "aadhaar", "aadhar",
+            "card", "number", "name", "government", "republic", "india",
+            "unique", "identity", "authority", "department"
+        }:
+            return False
+        if len(text) <= 1:
+            return False
+        return any(c.isalpha() for c in text)
+
+    candidates = []
+    # Anchor search region above the Aadhaar number and near its horizontal span.
+    ax0, ay0, ax1, ay1 = min(aadhaar_boxes, key=lambda b: b[1])
+    search_top = max(0, ay0 - max(120, (ay1 - ay0) * 4))
+    search_bottom = ay0 + 20
+    search_left = max(0, ax0 - 60)
+    search_right = min(img_w, ax1 + 60)
+
+    for i, tok in enumerate(texts):
+        if not tok.strip():
+            continue
+        if not is_aadhaar_name_token(tok):
+            continue
+        top = data["top"][i]
+        left = data["left"][i]
+        if not (search_top <= top <= search_bottom):
+            continue
+        if not (search_left <= left <= search_right):
+            continue
+        candidates.append(i)
+
+    if not candidates:
+        return []
+
+    lines = {}
+    for i in candidates:
+        key = _line_key(data, i)
+        lines.setdefault(key, []).append(i)
+
+    scored_lines = []
+    for key, idxs in lines.items():
+        if len(idxs) < 2:
+            continue
+        scored_lines.append((len(idxs), min(data["top"][i] for i in idxs), key))
+
+    if not scored_lines:
+        # fallback to any single candidate line if no two-token line exists
+        scored_lines = [(1, min(data["top"][i] for i in idxs), key)
+                        for key, idxs in lines.items()]
+
+    _, _, best_key = max(scored_lines)
+    tokens = sorted(lines[best_key], key=lambda i: data["left"][i])[:4]
+
+    x0 = min(data["left"][i] for i in tokens)
+    y0 = min(data["top"][i] for i in tokens)
+    x1 = max(data["left"][i] + data["width"][i] for i in tokens)
+    y1 = max(data["top"][i] + data["height"][i] for i in tokens)
+    return [pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h, p=6)]
+
+
 def find_dob_bboxes(data, img_w, img_h, dob_only_index=None):
     all_found = []
     for i, t in enumerate(data["text"]):
@@ -493,7 +568,10 @@ def process_page(page_img, page_num, config, log, custom_targets=None):
         bboxes += find_aadhaar_number_bboxes(data, img_w, img_h)
 
     if config.get("aadhaar_name") or config.get("pan_name"):
-        bboxes += find_name_bboxes(data, img_w, img_h)
+        name_bboxes = find_name_bboxes(data, img_w, img_h)
+        if config.get("aadhaar_name") and not name_bboxes:
+            name_bboxes += find_aadhaar_name_bboxes(data, img_w, img_h)
+        bboxes += name_bboxes
 
     if config.get("dob"):
         if page_num == 1:
