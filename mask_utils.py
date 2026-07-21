@@ -155,66 +155,139 @@ def find_aadhaar_number_bboxes(data, img_w, img_h):
     for i, t in enumerate(texts):
         if i in seen:
             continue
-        conf = int(data["conf"][i])
+        try:
+            conf = int(data["conf"][i])
+        except Exception:
+            conf = 0
 
+        # Straight 12-digit token
         if AADHAAR_12.match(t) and conf > 50:
             x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
             bboxes.append(pad_bbox(x, y, w, h, img_w, img_h))
             seen.add(i)
             continue
 
+        # 4 + 8 digit grouping
         if (i < len(texts) - 1 and AADHAAR_4DIGIT.match(t)
                 and AADHAAR_8DIGIT.match(texts[i + 1]) and conf > 70):
             j = i + 1
-            x0 = data["left"][i]
-            y0 = min(data["top"][i], data["top"][j])
-            x1 = data["left"][j] + data["width"][j]
-            y1 = max(data["top"][i] + data["height"][i], data["top"][j] + data["height"][j])
-            bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
-            seen.update([i, j])
-            continue
+            tops = [data["top"][m] for m in (i, j)]
+            heights = [data["height"][m] for m in (i, j)]
+            if max(tops) - min(tops) < 30 and max(heights) / max(1, min(heights)) < 2.0:
+                x0 = min(data["left"][i], data["left"][j])
+                y0 = min(tops)
+                x1 = max(data["left"][i] + data["width"][i], data["left"][j] + data["width"][j])
+                y1 = max(tops[m] + heights[m] for m in (0, 1))
+                if x1 - x0 <= img_w * 0.8:
+                    bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+                    seen.update([i, j])
+                    continue
 
+        # 4+4+4 grouping
         if (i < len(texts) - 2 and AADHAAR_4DIGIT.match(t)
                 and AADHAAR_4DIGIT.match(texts[i + 1])
                 and AADHAAR_4DIGIT.match(texts[i + 2]) and conf > 70):
             j, k = i + 1, i + 2
-            x0 = data["left"][i]
-            y0 = min(data["top"][i], data["top"][j], data["top"][k])
-            x1 = data["left"][k] + data["width"][k]
-            y1 = max(data["top"][m] + data["height"][m] for m in [i, j, k])
-            bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
-            seen.update([i, j, k])
+            tops = [data["top"][m] for m in (i, j, k)]
+            heights = [data["height"][m] for m in (i, j, k)]
+            if max(tops) - min(tops) < 30 and max(heights) / max(1, min(heights)) < 2.0:
+                x0 = min(data["left"][i], data["left"][j], data["left"][k])
+                y0 = min(tops)
+                x1 = max(data["left"][i] + data["width"][i], data["left"][j] + data["width"][j], data["left"][k] + data["width"][k])
+                y1 = max(tops[m] + heights[m] for m in range(3))
+                if x1 - x0 <= img_w * 0.8:
+                    bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+                    seen.update([i, j, k])
+                    continue
+            # fallback: mask tokens individually
+            for m in (i, j, k):
+                x, y, w, h = data["left"][m], data["top"][m], data["width"][m], data["height"][m]
+                bboxes.append(pad_bbox(x, y, w, h, img_w, img_h))
+                seen.add(m)
     return bboxes
 
 
 def find_name_bboxes(data, img_w, img_h, label=""):
     bboxes = []
     texts = data["text"]
-    # Build stop keywords from known field keywords and address hints
-    stop_keywords = [kw.lower() for kws in FIELD_KEYWORDS.values() for kw in kws] + [kw.lower() for kw in ADDR_KEYWORDS]
+    confs = data.get("conf", [])
+
+    # stop words as single tokens (split phrases)
+    stop_words = set()
+    for kws in FIELD_KEYWORDS.values():
+        for kw in kws:
+            stop_words.update(w.strip().lower() for w in kw.split())
+    stop_words.update(w.lower() for w in ADDR_KEYWORDS)
+
+    def is_name_token(tok):
+        tok_s = tok.strip().strip(',:')
+        if not tok_s:
+            return False
+        # avoid numeric tokens
+        if re.match(r'^\d+$', tok_s):
+            return False
+        # avoid common stop words
+        if tok_s.lower() in stop_words:
+            return False
+        # prefer alphabetic tokens longer than 1
+        return any(c.isalpha() for c in tok_s) and len(tok_s) > 1
 
     for i, t in enumerate(texts):
-        if any(kw.lower() in t.lower() for kw in NAME_KEYWORDS) and int(data["conf"][i]) > 20:
+        try:
+            c = int(confs[i])
+        except Exception:
+            c = 0
+        if any(kw.lower() in t.lower() for kw in NAME_KEYWORDS) and c > 15:
+            # search both before and after the label for name tokens
             name_tokens = []
+            # look ahead
             for j in range(i + 1, min(i + 6, len(texts))):
                 nt = texts[j].strip()
                 if not nt:
                     continue
-                nt_l = nt.lower()
-                # Stop if we hit another recognizable field keyword or address token
-                if any(sk in nt_l for sk in stop_keywords):
-                    break
-                if re.match(r'^\d+$', nt) and len(nt) > 4:
+                if not is_name_token(nt):
                     break
                 name_tokens.append(j)
                 if len(name_tokens) == 3:
                     break
+            # if nothing ahead, look behind (some layouts put name before label)
+            if not name_tokens:
+                for j in range(max(0, i - 3), i):
+                    nt = texts[j].strip()
+                    if not nt:
+                        continue
+                    if not is_name_token(nt):
+                        continue
+                    name_tokens.insert(0, j)
+                    if len(name_tokens) == 3:
+                        break
             if name_tokens:
-                x0 = data["left"][name_tokens[0]]
+                x0 = min(data["left"][k] for k in name_tokens)
                 y0 = min(data["top"][k] for k in name_tokens)
-                x1 = data["left"][name_tokens[-1]] + data["width"][name_tokens[-1]]
+                x1 = max(data["left"][k] + data["width"][k] for k in name_tokens)
                 y1 = max(data["top"][k] + data["height"][k] for k in name_tokens)
                 bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+
+    # Fallback: if no name found but aadhaar_name requested, look for long uppercase sequences
+    if not bboxes:
+        for i, t in enumerate(texts):
+            tok = t.strip()
+            if len(tok) >= 4 and tok.replace(' ', '').isupper() and any(c.isalpha() for c in tok):
+                # capture up to 3 adjacent uppercase tokens
+                name_tokens = [i]
+                for j in range(i + 1, min(i + 4, len(texts))):
+                    nt = texts[j].strip()
+                    if nt and nt.replace(' ', '').isupper():
+                        name_tokens.append(j)
+                    else:
+                        break
+                x0 = min(data["left"][k] for k in name_tokens)
+                y0 = min(data["top"][k] for k in name_tokens)
+                x1 = max(data["left"][k] + data["width"][k] for k in name_tokens)
+                y1 = max(data["top"][k] + data["height"][k] for k in name_tokens)
+                bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+                break
+
     return bboxes
 
 
