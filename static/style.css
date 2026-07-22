@@ -341,3 +341,18 @@ html, body {
 }
 .preview-box--selected { border-color: var(--accent); background: rgba(79,209,197,0.24); }
 .preview-page .preview-image { z-index: 1; display: block; }
+
+/* Drag selection rectangle while creating custom boxes */
+.preview-selection {
+  position: absolute;
+  border: 2px dashed rgba(0,120,212,0.95);
+  background: rgba(0,120,212,0.12);
+  pointer-events: none;
+  z-index: 20;
+  box-sizing: border-box;
+}
+
+.preview-box.preview-box--custom {
+  outline: 2px solid rgba(255,165,0,0.95);
+  background: rgba(255,165,0,0.08);
+}

@@ -178,6 +178,31 @@ def mask():
         if ocr_cache:
             selected_instances += pipeline.run_custom_search(ocr_cache, instructions)
 
+    # Accept custom drawn bboxes from the frontend and convert to synthetic instances
+    custom_bboxes = body.get("custom_bboxes", []) or []
+    if custom_bboxes:
+        synthetic_instances = []
+        for i, cb in enumerate(custom_bboxes):
+            try:
+                page = int(cb.get("page", 0))
+                bbox = tuple(cb["bbox"])
+                if len(bbox) != 4:
+                    continue
+            except Exception:
+                continue
+            inst = {
+                "id": cb.get("id", f"custom-{i+1}"),
+                "field_type": "custom",
+                "display_label": "custom",
+                "category": "custom",
+                "value": None,
+                "page": page,
+                "bbox": bbox,
+            }
+            synthetic_instances.append(inst)
+        if synthetic_instances:
+            selected_instances.extend(synthetic_instances)
+
     if not selected_instances:
         return jsonify({"error": "Select at least one field, or describe what to mask"}), 400
 

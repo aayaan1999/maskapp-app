@@ -329,6 +329,8 @@
       const payload = { job_id: currentJobId, instructions };
       if (selectedInstanceIdsArr.length) payload.instance_ids = selectedInstanceIdsArr;
       else payload.group_ids = selectedGroupIds;
+      // include any custom-drawn bounding boxes from the preview overlay
+      if (window.customBboxes && window.customBboxes.length) payload.custom_bboxes = window.customBboxes;
       const res = await fetch("/mask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
