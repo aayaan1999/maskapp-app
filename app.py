@@ -148,6 +148,7 @@ def mask():
     body = request.get_json(silent=True) or {}
     job_id = body.get("job_id")
     selected_group_ids = set(body.get("group_ids", []))
+    selected_instance_ids = set(body.get("instance_ids", []) or body.get("instance_ids", []))
     instructions = (body.get("instructions") or "").strip()
 
     if not job_id:
@@ -160,13 +161,17 @@ def mask():
     all_instances = job_data["instances"]
     num_pages = job_data["num_pages"]
 
-    # Re-derive each instance's group_id the same way group_for_ui does,
-    # so a selected checkbox maps back to every matching instance.
-    selected_instances = [
-        inst for inst in all_instances
-        if f"{inst['page']}::{inst['category']}::{inst['field_type']}::{inst['display_label']}" in selected_group_ids
-        or f"{inst['category']}::{inst['field_type']}::{inst['display_label']}" in selected_group_ids
-    ]
+    # If explicit instance ids were passed (user clicked boxes), prefer those.
+    if selected_instance_ids:
+        selected_instances = [inst for inst in all_instances if inst.get("id") in selected_instance_ids]
+    else:
+        # Re-derive each instance's group_id the same way group_for_ui does,
+        # so a selected checkbox maps back to every matching instance.
+        selected_instances = [
+            inst for inst in all_instances
+            if f"{inst['page']}::{inst['category']}::{inst['field_type']}::{inst['display_label']}" in selected_group_ids
+            or f"{inst['category']}::{inst['field_type']}::{inst['display_label']}" in selected_group_ids
+        ]
 
     if instructions:
         ocr_cache = jobs.load_ocr_data(BASE_DIR, job_id)
