@@ -1,5 +1,7 @@
 import os
 import uuid
+import base64
+from io import BytesIO
 
 from flask import Flask, request, render_template, send_file, jsonify, after_this_request
 
@@ -62,6 +64,18 @@ def build_document_groups(instances):
     return documents
 
 
+def _encode_page_preview(image, width=900):
+    """Resize a PIL image and return a data URL (PNG) for frontend previews."""
+    try:
+        ratio = width / image.width
+        preview = image.resize((int(width), int(image.height * ratio)))
+    except Exception:
+        preview = image
+    buf = BytesIO()
+    preview.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
 @app.route("/")
 def index():
     return render_template("index.html", ner_active=ner.ner_available())
@@ -101,6 +115,11 @@ def extract():
 
     groups = pipeline.group_for_ui(instances)
     documents = build_document_groups(instances)
+    # small PNG previews for frontend overlay; encoded as data URLs
+    try:
+        page_previews = [_encode_page_preview(img, width=900) for img in page_images]
+    except Exception:
+        page_previews = []
 
     if not groups and not documents:
         return jsonify({
@@ -108,6 +127,7 @@ def extract():
             "num_pages": len(page_images),
             "groups": [],
             "documents": [],
+            "page_previews": page_previews,
             "ner_active": ner.ner_available(),
             "message": "No standard fields were detected automatically. "
                        "You can still describe what to mask in plain text below.",
@@ -118,6 +138,7 @@ def extract():
         "num_pages": len(page_images),
         "groups": groups,
         "documents": documents,
+        "page_previews": page_previews,
         "ner_active": ner.ner_available(),
     })
 

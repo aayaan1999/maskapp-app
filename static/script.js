@@ -8,6 +8,7 @@
   const stepReview = document.getElementById("step-review");
   const reviewSubhead = document.getElementById("review-subhead");
   const groupsContainer = document.getElementById("groups-container");
+  const previewContainer = document.getElementById("preview-container");
   const instructionsEl = document.getElementById("instructions");
   const maskBtn = document.getElementById("mask-btn");
   const backBtn = document.getElementById("back-btn");
@@ -124,6 +125,7 @@
         }
         groupsContainer.appendChild(section);
       }
+      renderPreview(data);
       return;
     }
 
@@ -189,12 +191,76 @@
       section.appendChild(grid);
       groupsContainer.appendChild(section);
     }
+    renderPreview(data);
   }
 
   function truncate(s, n = 42) {
     if (!s) return "";
     return s.length > n ? s.slice(0, n) + "…" : s;
   }
+
+  // ---------- preview rendering and interaction ----------
+  function renderPreview(data) {
+    if (!previewContainer) return;
+    previewContainer.innerHTML = "";
+    const previews = data.page_previews || [];
+    const groups = data.groups || [];
+    if (!previews.length) return;
+
+    for (let pageIndex = 0; pageIndex < previews.length; pageIndex++) {
+      const src = previews[pageIndex];
+      const pageEl = document.createElement("div");
+      pageEl.className = "preview-page";
+      const img = document.createElement("img");
+      img.className = "preview-image";
+      img.src = src;
+      pageEl.appendChild(img);
+
+      img.addEventListener("load", () => {
+        const scale = img.clientWidth / img.naturalWidth || 1;
+        for (const g of groups) {
+          const bboxes = g.bboxes || [];
+          const pages = g.pages || [];
+          if (!pages.includes(pageIndex)) continue;
+          for (const bbox of bboxes) {
+            const [x0, y0, x1, y1] = bbox;
+            const box = document.createElement("button");
+            box.type = "button";
+            box.className = "preview-box";
+            box.dataset.groupId = g.group_id;
+            box.style.left = `${x0 * scale}px`;
+            box.style.top = `${y0 * scale}px`;
+            box.style.width = `${(x1 - x0) * scale}px`;
+            box.style.height = `${(y1 - y0) * scale}px`;
+            box.addEventListener("click", (ev) => { ev.stopPropagation(); toggleGroup(g.group_id); });
+            pageEl.appendChild(box);
+          }
+        }
+        updatePreviewSelection();
+      });
+
+      previewContainer.appendChild(pageEl);
+    }
+  }
+
+  function toggleGroup(groupId) {
+    const checkbox = groupsContainer.querySelector(`input[data-group-id="${groupId}"]`);
+    if (!checkbox) return;
+    checkbox.checked = !checkbox.checked;
+    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function updatePreviewSelection() {
+    if (!previewContainer) return;
+    const checked = new Set(Array.from(groupsContainer.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.dataset.groupId));
+    previewContainer.querySelectorAll('.preview-box').forEach(box => {
+      box.classList.toggle('preview-box--selected', checked.has(box.dataset.groupId));
+    });
+  }
+
+  groupsContainer.addEventListener('change', (e) => {
+    if (e.target && e.target.matches('input[type=checkbox]')) updatePreviewSelection();
+  });
 
   // ---------- step 3: mask & download ----------
   backBtn.addEventListener("click", () => {

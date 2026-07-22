@@ -107,16 +107,25 @@ def group_for_ui(instances):
                 "count": 0,
                 "sample_values": [],
                 "instance_ids": [],
+                "bboxes": [],
+                "pages": set(),
             }
         g = groups[key]
         g["count"] += 1
         g["instance_ids"].append(inst["id"])
+        # collect bboxes and pages so frontend can draw previews
+        if "bbox" in inst:
+            g["bboxes"].append(inst["bbox"])
+        g["pages"].add(inst.get("page", 0))
         if len(g["sample_values"]) < 3:
             g["sample_values"].append(inst["value"])
 
     grouped = list(groups.values())
-    grouped.sort(key=lambda g: (CATEGORY_ORDER.index(g["category"])
-                                 if g["category"] in CATEGORY_ORDER else 99,
+    # convert pages set -> sorted list for JSON serialisation
+    for g in grouped:
+        g["pages"] = sorted(list(g["pages"]))
+
+    grouped.sort(key=lambda g: (CATEGORY_ORDER.index(g["category"]) if g["category"] in CATEGORY_ORDER else 99,
                                  -g["count"]))
     return grouped
 
