@@ -118,8 +118,11 @@ def extract():
     # small PNG previews for frontend overlay; encoded as data URLs
     try:
         page_previews = [_encode_page_preview(img, width=900) for img in page_images]
+        # include original page sizes so frontend can map preview coords -> original pixels
+        page_sizes = [{"width": img.width, "height": img.height} for img in page_images]
     except Exception:
         page_previews = []
+        page_sizes = []
 
     if not groups and not documents:
         return jsonify({
@@ -139,6 +142,7 @@ def extract():
         "groups": groups,
         "documents": documents,
         "page_previews": page_previews,
+        "page_sizes": page_sizes,
         "ner_active": ner.ner_available(),
     })
 

@@ -204,6 +204,7 @@
     if (!previewContainer) return;
     previewContainer.innerHTML = "";
     const previews = data.page_previews || [];
+    const pageSizes = data.page_sizes || [];
     const groups = data.groups || [];
     // maps for selection syncing
     const groupToInstanceIds = {};
@@ -214,13 +215,16 @@
       const src = previews[pageIndex];
       const pageEl = document.createElement("div");
       pageEl.className = "preview-page";
+      pageEl.dataset.page = pageIndex;
       const img = document.createElement("img");
       img.className = "preview-image";
       img.src = src;
       pageEl.appendChild(img);
 
       img.addEventListener("load", () => {
-        const scale = img.clientWidth / img.naturalWidth || 1;
+        // map instance bbox (which are in original page pixels) to displayed preview
+        const orig = pageSizes[pageIndex] || { width: img.naturalWidth, height: img.naturalHeight };
+        const scale = img.clientWidth / orig.width || 1;
         for (const g of groups) {
           const bboxes = g.bboxes || [];
           const pages = g.pages || [];
@@ -251,9 +255,10 @@
 
       previewContainer.appendChild(pageEl);
     }
-    // expose maps for later sync
+    // expose maps and page sizes for later sync and coordinate mapping
     previewContainer._groupToInstanceIds = groupToInstanceIds;
     previewContainer._instanceToGroup = instanceToGroup;
+    previewContainer._pageSizes = pageSizes;
   }
 
   // explicit per-instance selection set
