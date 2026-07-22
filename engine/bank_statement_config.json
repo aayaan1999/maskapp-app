@@ -1,0 +1,36 @@
+{
+  "header_keywords": {
+    "date": ["date", "value date", "txn date", "transaction date", "transaction"],
+    "narration": ["narration", "description", "particulars", "details", "remarks"],
+    "reference": ["reference", "ref no", "ref #", "utr", "cheque", "chq", "instrument", "txn ref", "transaction ref"],
+    "debit": ["debit", "withdrawal", "dr", "dr."],
+    "credit": ["credit", "deposit", "cr", "cr."],
+    "balance": ["balance", "closing balance", "running balance", "available balance", "opening balance"],
+    "amount": ["amount", "amt", "value"],
+    "account_number": ["account number", "acc no", "a/c no", "account no", "a/c", "acct"],
+    "iban": ["iban"],
+    "customer_name": ["customer name", "account holder", "holder", "name"],
+    "phone_number": ["phone", "mobile", "contact"],
+    "email": ["email", "e-mail"]
+  },
+  "column_labels": {
+    "date": "Statement Date",
+    "narration": "Statement Narration",
+    "reference": "Statement Reference No.",
+    "debit": "Statement Debit Amount",
+    "credit": "Statement Credit Amount",
+    "balance": "Statement Balance",
+    "amount": "Statement Amount",
+    "account_number": "Account Number",
+    "iban": "IBAN",
+    "customer_name": "Customer Name",
+    "phone_number": "Phone Number",
+    "email": "Email Address"
+  },
+  "regex_fields": {
+    "iban": "\\b[A-Z]{2}\\d{2}[A-Z0-9]{11,30}\\b",
+    "account_number": "\\b\\d{9,18}\\b",
+    "phone_number": "\\b(?:\\+91|0)?[6-9]\\d{9}\\b",
+    "email": "\\b[\\w._%+-]+@[\\w.-]+\\.\\w{2,}\\b"
+  }
+}

@@ -8,22 +8,28 @@ a list of `instance` dicts with a common shape so the pipeline can treat
 them uniformly.
 """
 
+import json
 import re
+from .bank_statement import load_bank_statement_config
 from .ocr import words_bbox
+
+config = load_bank_statement_config()
+regex_fields = config.get("regex_fields", {})
+IBAN_PATTERN = re.compile(regex_fields.get("iban", r'\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b'))
+ACCOUNT_NO_PATTERN = re.compile(regex_fields.get("account_number", r'\b\d{9,18}\b'))
+PHONE_PATTERN = re.compile(regex_fields.get("phone_number", r'\b(?:\+91|0)?[6-9]\d{9}\b'))
+EMAIL_PATTERN = re.compile(regex_fields.get("email", r'\b[\w._%+-]+@[\w.-]+\.\w{2,}\b'))
 
 AADHAAR_12 = re.compile(r'^\d{12}$')
 AADHAAR_4DIGIT = re.compile(r'^\d{4}$')
 AADHAAR_8DIGIT = re.compile(r'^\d{8}$')
 DOB_PATTERN = re.compile(r'\b\d{1,2}[\/\-\.]\d{2}[\/\-\.]\d{2,4}\b')
 PAN_PATTERN = re.compile(r'\b[A-Z]{5}\d{4}[A-Z]\b')
-PHONE_PATTERN = re.compile(r'\b[6-9]\d{9}\b|\b\+91[-\s]?\d{10}\b')
-EMAIL_PATTERN = re.compile(r'\b[\w._%+-]+@[\w.-]+\.\w{2,}\b')
 CARD_FULL = re.compile(r'^\d{13,19}$')
 CARD_GROUP_4 = re.compile(r'^\d{4}$')
 PIN_PATTERN = re.compile(r'\b\d{6}\b')
 PIN_FULLTOKEN = re.compile(r'^\d{6}$')  # whole-token match, so "105000.00" doesn't qualify
 IFSC_PATTERN = re.compile(r'\b[A-Z]{4}0[A-Z0-9]{6}\b')
-ACCOUNT_NO_PATTERN = re.compile(r'\b\d{9,18}\b')
 
 NAME_KEYWORDS = ["name", "नाम"]
 ADDR_KEYWORDS = ["address", "पता", "addr", "s/o", "w/o", "d/o", "house",
@@ -131,6 +137,26 @@ def detect_email(words, lines, page, img_w, img_h, counter):
     for i, w in enumerate(words):
         if EMAIL_PATTERN.search(w["text"]) and w["conf"] > 35:
             out.append(_mk("email", "Email Address", "contact", w["text"],
+                            page, words_bbox(words, [i], img_w, img_h), counter.next()))
+            seen.add(i)
+    return out, seen
+
+
+def detect_iban(words, lines, page, img_w, img_h, counter):
+    out, seen = [], set()
+    for i, w in enumerate(words):
+        if IBAN_PATTERN.search(w["text"]):
+            out.append(_mk("iban", "IBAN", "financial", w["text"],
+                            page, words_bbox(words, [i], img_w, img_h), counter.next()))
+            seen.add(i)
+    return out, seen
+
+
+def detect_account_number(words, lines, page, img_w, img_h, counter):
+    out, seen = [], set()
+    for i, w in enumerate(words):
+        if ACCOUNT_NO_PATTERN.search(w["text"]) and w["conf"] > 20:
+            out.append(_mk("account_number", "Account Number", "financial", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
     return out, seen
@@ -295,7 +321,8 @@ def run_known_detectors(words, lines, page, img_w, img_h, counter):
     instances = []
     claimed = set()
     for fn in (detect_aadhaar_number, detect_pan_number, detect_dob, detect_phone,
-               detect_email, detect_card_number, detect_address, detect_name):
+               detect_email, detect_iban, detect_account_number,
+               detect_card_number, detect_address, detect_name):
         found, seen = fn(words, lines, page, img_w, img_h, counter)
         instances += found
         claimed |= seen
