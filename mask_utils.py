@@ -71,10 +71,10 @@ def extract_custom_targets(text: str):
     scope = "row" if _ROW_SCOPE_WORDS.search(text) else "token"
 
     # 1) Quoted terms always win — most explicit signal
-    for pat in (re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'") ):
+    for pat in (re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'")):
         for m in pat.finditer(text):
             term = m.group(1).strip()
-            if term and not term.lower().endswith("s"):
+            if term and not term.lower().endswith("s"):  # skip stray "'s" captures
                 targets.append((term, scope))
     if targets:
         return targets
@@ -155,267 +155,150 @@ def find_aadhaar_number_bboxes(data, img_w, img_h):
     for i, t in enumerate(texts):
         if i in seen:
             continue
-        try:
-            conf = int(data["conf"][i])
-        except Exception:
-            conf = 0
+        conf = int(data["conf"][i])
 
-        # Straight 12-digit token -> tight box
         if AADHAAR_12.match(t) and conf > 50:
             x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
-            bboxes.append(pad_bbox(x, y, w, h, img_w, img_h, p=6))
+            bboxes.append(pad_bbox(x, y, w, h, img_w, img_h))
             seen.add(i)
             continue
 
-        # 4 + 8 digit grouping
         if (i < len(texts) - 1 and AADHAAR_4DIGIT.match(t)
                 and AADHAAR_8DIGIT.match(texts[i + 1]) and conf > 70):
             j = i + 1
-            tops = [data["top"][m] for m in (i, j)]
-            heights = [data["height"][m] for m in (i, j)]
-            if max(tops) - min(tops) < 30:
-                x0 = min(data["left"][i], data["left"][j])
-                x1 = max(data["left"][i] + data["width"][i], data["left"][j] + data["width"][j])
-                # if grouping would create a very wide box, prefer token-level boxes
-                if x1 - x0 > img_w * 0.45:
-                    for m in (i, j):
-                        x, y, w, h = data["left"][m], data["top"][m], data["width"][m], data["height"][m]
-                        bboxes.append(pad_bbox(x, y, w, h, img_w, img_h, p=6))
-                        seen.add(m)
-                else:
-                    y0 = min(tops)
-                    y1 = max(tops[m] + heights[m] for m in (0, 1))
-                    bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h, p=6))
-                    seen.update([i, j])
-                continue
+            x0 = data["left"][i]
+            y0 = min(data["top"][i], data["top"][j])
+            x1 = data["left"][j] + data["width"][j]
+            y1 = max(data["top"][i] + data["height"][i], data["top"][j] + data["height"][j])
+            bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+            seen.update([i, j])
+            continue
 
-        # 4+4+4 grouping
         if (i < len(texts) - 2 and AADHAAR_4DIGIT.match(t)
                 and AADHAAR_4DIGIT.match(texts[i + 1])
                 and AADHAAR_4DIGIT.match(texts[i + 2]) and conf > 70):
             j, k = i + 1, i + 2
-            tops = [data["top"][m] for m in (i, j, k)]
-            heights = [data["height"][m] for m in (i, j, k)]
-            x0 = min(data["left"][i], data["left"][j], data["left"][k])
-            x1 = max(data["left"][i] + data["width"][i], data["left"][j] + data["width"][j], data["left"][k] + data["width"][k])
-            # if the combined box would be too wide, create tight boxes per token
-            if x1 - x0 > img_w * 0.45 or max(tops) - min(tops) > 30:
-                for m in (i, j, k):
-                    x, y, w, h = data["left"][m], data["top"][m], data["width"][m], data["height"][m]
-                    bboxes.append(pad_bbox(x, y, w, h, img_w, img_h, p=6))
-                    seen.add(m)
-            else:
-                y0 = min(tops)
-                y1 = max(tops[m] + heights[m] for m in range(3))
-                bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h, p=6))
-                seen.update([i, j, k])
-            continue
-
+            x0 = data["left"][i]
+            y0 = min(data["top"][i], data["top"][j], data["top"][k])
+            x1 = data["left"][k] + data["width"][k]
+            y1 = max(data["top"][m] + data["height"][m] for m in [i, j, k])
+            bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+            seen.update([i, j, k])
     return bboxes
 
 
 def find_name_bboxes(data, img_w, img_h, label=""):
+    """Finds a name value following a 'Name:'-style label. Handles bilingual
+    labels like 'नाम / Name' by treating adjacent keyword/punctuation tokens
+    as one label unit, rather than stopping at the second keyword."""
     bboxes = []
     texts = data["text"]
-    confs = data.get("conf", [])
+    n = len(texts)
+    i = 0
+    while i < n:
+        t = texts[i]
+        if any(kw.lower() in t.lower() for kw in NAME_KEYWORDS) and int(data["conf"][i]) > 15:
+            # Skip past adjacent label-continuation tokens: punctuation like
+            # '/' or ':', or a second "name" keyword right next to this one
+            # (bilingual labels print both scripts back to back).
+            j = i + 1
+            while j < n and (
+                texts[j].strip() in ("/", "-", ":", "|", "")
+                or any(kw.lower() in texts[j].lower() for kw in NAME_KEYWORDS)
+            ):
+                j += 1
 
-    # stop words as single tokens (split phrases)
-    stop_words = set()
-    for kws in FIELD_KEYWORDS.values():
-        for kw in kws:
-            stop_words.update(w.strip().lower() for w in kw.split())
-    stop_words.update(w.lower() for w in ADDR_KEYWORDS)
+            if j >= n:
+                i = j
+                continue
 
-    def is_name_token(tok):
-        tok_s = tok.strip().strip(',:')
-        if not tok_s:
-            return False
-        # avoid numeric tokens
-        if re.match(r'^\d+$', tok_s):
-            return False
-        # avoid common stop words
-        if tok_s.lower() in stop_words:
-            return False
-        # prefer alphabetic tokens longer than 1
-        return any(c.isalpha() for c in tok_s) and len(tok_s) > 1
-
-    for i, t in enumerate(texts):
-        try:
-            c = int(confs[i])
-        except Exception:
-            c = 0
-        # lower the label confidence threshold so weak OCR labels still trigger
-        if any(kw.lower() in t.lower() for kw in NAME_KEYWORDS) and c > 5:
-            # search both before and after the label for name tokens
+            # Stay strictly on the same OCR line as the first value token —
+            # otherwise a short value (e.g. "RAHUL KUMAR") can spill into
+            # the NEXT label's tokens (e.g. "PAN:"), which both corrupts
+            # the box width (computed from the wrong last token) and masks
+            # unrelated text.
+            value_line = _line_key(data, j)
             name_tokens = []
-            # look ahead
-            for j in range(i + 1, min(i + 6, len(texts))):
-                nt = texts[j].strip()
+            for k in range(j, min(j + 8, n)):
+                nt = texts[k].strip()
                 if not nt:
                     continue
-                if not is_name_token(nt):
+                if _line_key(data, k) != value_line:
                     break
-                name_tokens.append(j)
-                if len(name_tokens) == 3:
+                if any(kw2.lower() in nt.lower() for kw2 in NAME_KEYWORDS):
                     break
-            # if nothing ahead, look behind (some layouts put name before label)
-            if not name_tokens:
-                for j in range(max(0, i - 5), i):
-                    nt = texts[j].strip()
-                    if not nt:
-                        continue
-                    if not is_name_token(nt):
-                        continue
-                    name_tokens.insert(0, j)
-                    if len(name_tokens) == 3:
-                        break
+                if re.match(r'^\d+$', nt) and len(nt) > 4:
+                    break
+                name_tokens.append(k)
+                if len(name_tokens) == 4:
+                    break
             if name_tokens:
+                # min/max across ALL selected tokens — not just the first/last
+                # by list order — so the box is correct regardless of order.
                 x0 = min(data["left"][k] for k in name_tokens)
                 y0 = min(data["top"][k] for k in name_tokens)
                 x1 = max(data["left"][k] + data["width"][k] for k in name_tokens)
                 y1 = max(data["top"][k] + data["height"][k] for k in name_tokens)
                 bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
-
-            # if still nothing, search the entire OCR line containing the label
-            if not name_tokens:
-                try:
-                    key = _line_key(data, i)
-                    # collect name-like tokens on same line, ordered by position
-                    line_idxs = [j for j in range(len(texts)) if _line_key(data, j) == key and is_name_token(texts[j])]
-                    if line_idxs:
-                        # pick up to 3 tokens closest to label
-                        line_idxs.sort(key=lambda j: abs(j - i))
-                        sel = sorted(line_idxs[:3])
-                        x0 = min(data["left"][k] for k in sel)
-                        y0 = min(data["top"][k] for k in sel)
-                        x1 = max(data["left"][k] + data["width"][k] for k in sel)
-                        y1 = max(data["top"][k] + data["height"][k] for k in sel)
-                        bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
-                except Exception:
-                    pass
-
-    # Fallback: if no name found but aadhaar_name requested, look for long uppercase sequences
-    def is_name_fallback_token(tok):
-        tok = tok.strip().strip(',:.')
-        if len(tok) < 4 or not any(c.isalpha() for c in tok):
-            return False
-        if not tok.replace(' ', '').isupper():
-            return False
-        if tok.lower() in {
-            'dob', 'd.o.b', 'date', 'birth', 'name', 'aadhaar', 'aadhar', 'uid', 'uidai',
-            'government', 'india', 'unique', 'identity', 'authority', 'card', 'number',
-            'photo', 'sex', 'male', 'female', 'address', 'father', 'mother'
-        }:
-            return False
-        return True
-
-    if not bboxes:
-        for i, t in enumerate(texts):
-            tok = t.strip()
-            if not is_name_fallback_token(tok):
-                continue
-            # capture up to 3 adjacent uppercase tokens, but ignore labels
-            name_tokens = [i]
-            for j in range(i + 1, min(i + 4, len(texts))):
-                nt = texts[j].strip()
-                if nt and is_name_fallback_token(nt):
-                    name_tokens.append(j)
-                else:
-                    break
-            x0 = min(data["left"][k] for k in name_tokens)
-            y0 = min(data["top"][k] for k in name_tokens)
-            x1 = max(data["left"][k] + data["width"][k] for k in name_tokens)
-            y1 = max(data["top"][k] + data["height"][k] for k in name_tokens)
-            bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
-            break
-
+            i = j
+        else:
+            i += 1
     return bboxes
 
 
-def find_aadhaar_name_bboxes(data, img_w, img_h):
-    texts = data["text"]
-    confs = data.get("conf", [])
-
-    aadhaar_boxes = find_aadhaar_number_bboxes(data, img_w, img_h)
-    if not aadhaar_boxes:
-        return []
-
-    def is_aadhaar_name_token(tok):
-        text = tok.strip().strip(',:')
-        if not text:
-            return False
-        if re.match(r'^\d+$', text):
-            return False
-        if text.lower() in {
-            "male", "female", "m", "f", "dob", "date", "birth", "year",
-            "month", "address", "addr", "uid", "uidai", "aadhaar", "aadhar",
-            "card", "number", "name", "government", "republic", "india",
-            "unique", "identity", "authority", "department"
-        }:
-            return False
-        if len(text) <= 1:
-            return False
-        return any(c.isalpha() for c in text)
-
-    candidates = []
-    # Anchor search region above the Aadhaar number and near its horizontal span.
-    ax0, ay0, ax1, ay1 = min(aadhaar_boxes, key=lambda b: b[1])
-    search_top = max(0, ay0 - max(120, (ay1 - ay0) * 4))
-    search_bottom = ay0 + 20
-    search_left = max(0, ax0 - 60)
-    search_right = min(img_w, ax1 + 60)
-
-    for i, tok in enumerate(texts):
-        if not tok.strip():
+def find_name_above_dob_bboxes(data, img_w, img_h):
+    """
+    Fallback for ID cards that print the name with NO 'Name:' label at all
+    — this is how real Aadhaar cards work (the name just appears as plain
+    text). By Aadhaar's standard layout, the name sits on the line(s)
+    immediately above the date-of-birth line, so we use that position as
+    the signal instead of a keyword.
+    Only used when the keyword-based find_name_bboxes finds nothing.
+    """
+    line_groups = {}
+    for i, t in enumerate(data["text"]):
+        if not t.strip():
             continue
-        if not is_aadhaar_name_token(tok):
-            continue
-        top = data["top"][i]
-        left = data["left"][i]
-        if not (search_top <= top <= search_bottom):
-            continue
-        if not (search_left <= left <= search_right):
-            continue
-        candidates.append(i)
-
-    if not candidates:
-        return []
-
-    lines = {}
-    for i in candidates:
         key = _line_key(data, i)
-        lines.setdefault(key, []).append(i)
+        line_groups.setdefault(key, []).append(i)
 
-    scored_lines = []
-    for key, idxs in lines.items():
-        if len(idxs) < 2:
-            continue
-        scored_lines.append((len(idxs), min(data["top"][i] for i in idxs), key))
+    lines = []
+    for key, idxs in line_groups.items():
+        idxs.sort()
+        text = " ".join(data["text"][i] for i in idxs)
+        top = min(data["top"][i] for i in idxs)
+        lines.append({"idxs": idxs, "text": text, "top": top})
+    lines.sort(key=lambda l: l["top"])
 
-    if not scored_lines:
-        # fallback to any single candidate line if no two-token line exists
-        scored_lines = [(1, min(data["top"][i] for i in idxs), key)
-                        for key, idxs in lines.items()]
+    dob_line_idx = None
+    for li, line in enumerate(lines):
+        if DOB_PATTERN.search(line["text"]) or re.search(r'\bDOB\b|जन्म', line["text"], re.I):
+            dob_line_idx = li
+            break
+    if dob_line_idx is None or dob_line_idx == 0:
+        return []
 
-    _, _, best_key = max(scored_lines)
-    all_idxs = sorted(lines[best_key], key=lambda i: data["left"][i])
-    # if more than 4 tokens on the line, pick 4 centered around the median
-    if len(all_idxs) > 4:
-        centers = [data["left"][i] + data["width"][i] / 2.0 for i in all_idxs]
-        median_center = sorted(centers)[len(centers) // 2]
-        ranked = sorted(all_idxs, key=lambda i: abs((data["left"][i] + data["width"][i] / 2.0) - median_center))
-        tokens = sorted(ranked[:4], key=lambda i: data["left"][i])
-    else:
-        tokens = all_idxs
+    # Take up to 2 lines immediately above the DOB line — real Aadhaar
+    # cards print the name in Hindi then English right above the DOB row.
+    # Skip lines that look like section headings (fully uppercase, e.g.
+    # "AADHAAR CARD") — real names are printed in Title Case / mixed
+    # script, not all-caps, so this reliably tells them apart.
+    candidate_lines = lines[max(0, dob_line_idx - 2):dob_line_idx]
+    bboxes = []
+    for line in candidate_lines:
+        letters_only = re.sub(r'[^A-Za-z]', '', line["text"])
+        if letters_only and letters_only == letters_only.upper() and len(letters_only) > 3:
+            continue  # looks like a heading, not a name
+        idxs = line["idxs"]
+        x0 = min(data["left"][k] for k in idxs)
+        y0 = min(data["top"][k] for k in idxs)
+        x1 = max(data["left"][k] + data["width"][k] for k in idxs)
+        y1 = max(data["top"][k] + data["height"][k] for k in idxs)
+        bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+    return bboxes
 
-    x0 = min(data["left"][i] for i in tokens)
-    y0 = min(data["top"][i] for i in tokens)
-    x1 = max(data["left"][i] + data["width"][i] for i in tokens)
-    y1 = max(data["top"][i] + data["height"][i] for i in tokens)
-    return [pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h, p=6)]
 
-
-def find_dob_bboxes(data, img_w, img_h, dob_only_index=None):
+def find_dob_bboxes(data, img_w, img_h, label="", dob_only_index=None):
     all_found = []
     for i, t in enumerate(data["text"]):
         if DOB_PATTERN.search(t) and int(data["conf"][i]) > 30:
@@ -432,9 +315,63 @@ def find_dob_bboxes(data, img_w, img_h, dob_only_index=None):
 def find_pan_number_bboxes(data, img_w, img_h):
     bboxes = []
     for i, t in enumerate(data["text"]):
-        if PAN_PATTERN.search(t) and int(data["conf"][i]) > 40:
+        # Lowered confidence threshold — PAN's format (5 letters+4 digits+1
+        # letter) is distinctive enough that false positives are rare, and
+        # stylised card fonts often get read with lower OCR confidence.
+        if PAN_PATTERN.search(t) and int(data["conf"][i]) > 15:
             x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
             bboxes.append(pad_bbox(x, y, w, h, img_w, img_h))
+    return bboxes
+
+
+CARD_GROUP_4 = re.compile(r'^\d{4}$')
+CARD_FULL = re.compile(r'^\d{13,19}$')
+
+
+def find_card_number_bboxes(data, img_w, img_h):
+    """
+    Finds credit/debit card numbers via OCR — either as one solid run of
+    13-19 digits, or as 3-4 separate groups of 4 digits on the same line
+    (how card numbers are usually printed, e.g. '4111 2222 3333 4444').
+    Replaces the old fixed-rectangle guess, which blacked out a hardcoded
+    region regardless of what was actually there.
+    """
+    texts = data["text"]
+    n = len(texts)
+    bboxes = []
+    seen = set()
+
+    for i in range(n):
+        if i in seen:
+            continue
+        conf = int(data["conf"][i])
+        t = texts[i]
+
+        if CARD_FULL.match(t) and conf > 20:
+            x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+            bboxes.append(pad_bbox(x, y, w, h, img_w, img_h))
+            seen.add(i)
+            continue
+
+        if CARD_GROUP_4.match(t) and conf > 30:
+            group = [i]
+            j = i + 1
+            while (j < n and len(group) < 4
+                   and CARD_GROUP_4.match(texts[j])
+                   and int(data["conf"][j]) > 30
+                   and _line_key(data, j) == _line_key(data, i)):
+                group.append(j)
+                j += 1
+            # Require at least 3 groups (12+ digits) so we don't mistake
+            # unrelated 4-digit numbers (e.g. a year) for a card number.
+            if len(group) >= 3:
+                x0 = data["left"][group[0]]
+                y0 = min(data["top"][k] for k in group)
+                x1 = data["left"][group[-1]] + data["width"][group[-1]]
+                y1 = max(data["top"][k] + data["height"][k] for k in group)
+                bboxes.append(pad_bbox(x0, y0, x1 - x0, y1 - y0, img_w, img_h))
+                seen.update(group)
+
     return bboxes
 
 
@@ -481,7 +418,7 @@ def find_address_bboxes(data, img_w, img_h):
     PIN_PATTERN = re.compile(r'\b\d{6}\b')
     for i, t in enumerate(texts):
         tl = t.lower()
-        if (any(kw in tl for kw in ["s/o", "w/o", "d/o", "village", "dist", "taluk"]) 
+        if (any(kw in tl for kw in ["s/o", "w/o", "d/o", "village", "dist", "taluk"])
                 or PIN_PATTERN.search(t)) and int(data["conf"][i]) > 30:
             x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
             bboxes.append(pad_bbox(x, y, w, h, img_w, img_h))
@@ -489,28 +426,13 @@ def find_address_bboxes(data, img_w, img_h):
     return bboxes
 
 
-# ── Layout fallbacks ──
-
-def get_pan_layout_bboxes(page_img, page_num):
-    if page_num != 0:
-        return []
-    img_w, img_h = page_img.size
-    pan_top = 0.52
-    regions = [
-        (0.04, pan_top + 0.215, 0.42, pan_top + 0.255),
-        (0.04, pan_top + 0.285, 0.28, pan_top + 0.325),
-    ]
-    bboxes = []
-    for x0f, y0f, x1f, y1f in regions:
-        bboxes.append((int(x0f * img_w), int(y0f * img_h), int(x1f * img_w), int(y1f * img_h)))
-    return bboxes
-
-
-def get_credit_card_layout_bbox(page_img, page_num):
-    if page_num != 1:
-        return []
-    img_w, img_h = page_img.size
-    return [(int(0.04 * img_w), int(0.30 * img_h), int(0.72 * img_w), int(0.41 * img_h))]
+# NOTE: the old get_pan_layout_bboxes() / get_credit_card_layout_bbox()
+# fixed-percentage fallbacks have been removed. They guessed a mask
+# position using hardcoded page percentages tuned to one specific test
+# document, and drew boxes in unrelated places on any other layout. Real
+# OCR-based detection (find_pan_number_bboxes, find_card_number_bboxes) is
+# used instead — if it can't confidently find the number, nothing is
+# masked for that field rather than guessing wrong.
 
 
 # ── Custom name / entity masking (for free-form documents like bank statements) ──
@@ -591,23 +513,27 @@ def process_page(page_img, page_num, config, log, custom_targets=None):
         bboxes += find_aadhaar_number_bboxes(data, img_w, img_h)
 
     if config.get("aadhaar_name") or config.get("pan_name"):
-        name_bboxes = find_name_bboxes(data, img_w, img_h)
-        if config.get("aadhaar_name") and not name_bboxes:
-            name_bboxes += find_aadhaar_name_bboxes(data, img_w, img_h)
-        bboxes += name_bboxes
+        # Run both detectors and take the union rather than "fallback only
+        # if page-wide empty" — on documents with multiple ID sections
+        # (e.g. Aadhaar + PAN on one page), a labelled "Name:" match in one
+        # section would otherwise wrongly suppress the DOB-relative
+        # fallback needed for an unlabelled Aadhaar name elsewhere on the
+        # same page.
+        bboxes += find_name_bboxes(data, img_w, img_h, label=f"P{page_num + 1}")
+        bboxes += find_name_above_dob_bboxes(data, img_w, img_h)
 
     if config.get("dob"):
-        if page_num == 1:
-            bboxes += find_dob_bboxes(data, img_w, img_h, dob_only_index=1)
-        else:
-            bboxes += find_dob_bboxes(data, img_w, img_h)
+        # Note: this matches ANY date-shaped text (dd/mm/yyyy etc.), not
+        # specifically a birthdate — on documents with many dates (bank
+        # statements, invoices) it will mask every date it finds. Best
+        # suited to ID-card-style documents with one or two dates.
+        bboxes += find_dob_bboxes(data, img_w, img_h)
 
     if config.get("pan_number"):
-        pan_ocr = find_pan_number_bboxes(data, img_w, img_h)
-        bboxes += pan_ocr if pan_ocr else get_pan_layout_bboxes(page_img, page_num)
+        bboxes += find_pan_number_bboxes(data, img_w, img_h)
 
     if config.get("credit_card_number"):
-        bboxes += get_credit_card_layout_bbox(page_img, page_num)
+        bboxes += find_card_number_bboxes(data, img_w, img_h)
 
     if config.get("phone_number"):
         bboxes += find_phone_bboxes(data, img_w, img_h)
