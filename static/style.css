@@ -337,5 +337,7 @@ html, body {
   background: rgba(79,209,197,0.12);
   cursor: pointer;
   padding: 0;
+  z-index: 5;
 }
 .preview-box--selected { border-color: var(--accent); background: rgba(79,209,197,0.24); }
+.preview-page .preview-image { z-index: 1; display: block; }
