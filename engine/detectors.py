@@ -163,6 +163,66 @@ def detect_labelled_dates(words, lines, page, img_w, img_h, counter):
     return out, seen
 
 
+def _find_keyword_x_center(words, line_word_idxs, keyword):
+    """x-center of a (possibly multi-word) keyword's position within a line, or None."""
+    kw_tokens = keyword.lower().split()
+    n = len(kw_tokens)
+    line_tokens = [words[i]["text"].strip(",.:;()").lower() for i in line_word_idxs]
+    for start in range(len(line_tokens) - n + 1):
+        if line_tokens[start:start + n] == kw_tokens:
+            idxs = line_word_idxs[start:start + n]
+            xs = [(words[i]["left"] + words[i]["right"]) / 2 for i in idxs]
+            return sum(xs) / len(xs)
+    return None
+
+
+def reassociate_unlabelled_dates(instances, lines, words):
+    """
+    Handles a very common ID-card footer layout: a row of date LABELS
+    ("Date of Birth | Date of Issue | Date of Expiry") sitting directly
+    above a row of date VALUES, rather than each label sharing a line
+    with its own value. detect_labelled_dates only matches same-line
+    pairs, so those dates come back as "date_unlabelled" — this looks
+    for the nearest label row within a few line-heights and reassigns
+    each date to whichever label sits closest to it horizontally.
+    """
+    label_positions = []  # (line, concept, x_center)
+    for line in lines:
+        for concept in ("dob", "date_of_issue", "date_of_expiry"):
+            for kw in i18n_labels.all_keywords(concept):
+                x = _find_keyword_x_center(words, line["word_idxs"], kw)
+                if x is not None:
+                    label_positions.append((line, concept, x))
+                    break
+    if not label_positions:
+        return instances
+
+    out = []
+    for inst in instances:
+        if inst["field_type"] != "date_unlabelled":
+            out.append(inst)
+            continue
+        l, t, r, b = inst["bbox"]
+        cx, cy = (l + r) / 2, (t + b) / 2
+        row_h = max(1, b - t)
+        best_concept, best_dist = None, None
+        for line, concept, x in label_positions:
+            line_cy = (line["top"] + line["bottom"]) / 2
+            vert_dist = abs(line_cy - cy)
+            if vert_dist > row_h * 6:  # only consider a nearby row, not the whole page
+                continue
+            dist = abs(x - cx) + vert_dist * 0.3
+            if best_dist is None or dist < best_dist:
+                best_dist, best_concept = dist, concept
+        if best_concept:
+            inst = dict(inst)
+            inst["field_type"] = best_concept
+            inst["display_label"] = DATE_CONCEPT_LABELS[best_concept]
+            inst["category"] = "identity"
+        out.append(inst)
+    return out
+
+
 def detect_phone(words, lines, page, img_w, img_h, counter):
     out, seen = [], set()
     for i, w in enumerate(words):
@@ -301,10 +361,21 @@ def detect_generic_labels(words, lines, page, img_w, img_h, counter, already_cla
     already own — e.g. "Father's Name: ...", "Account No: ...",
     "IFSC Code: ...", "Policy No: ...", "Employee ID: ...". This is what
     makes the tool cover documents beyond the fixed Aadhaar/PAN field set.
+
+    Requires reasonable average OCR confidence across the line. Without
+    this, a bilingual document whose non-Latin script Tesseract can't
+    read (e.g. Arabic text with no Arabic language pack installed)
+    tends to produce low-confidence junk tokens that still happen to
+    look like "Label: value" — surfacing those as fake fields is worse
+    than missing a genuinely low-quality scan's real field, so this
+    errs toward dropping anything OCR itself wasn't confident about.
     """
     out = []
     for line in lines:
         if any(idx in already_claimed for idx in line["word_idxs"]):
+            continue
+        confs = [words[i]["conf"] for i in line["word_idxs"] if words[i]["conf"] >= 0]
+        if confs and (sum(confs) / len(confs)) < 45:
             continue
         m = _LABEL_LINE.match(line["text"])
         if not m:

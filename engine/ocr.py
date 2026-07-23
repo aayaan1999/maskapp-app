@@ -92,7 +92,7 @@ def ocr_page(image):
     """
     raw = pytesseract.image_to_data(
         image, output_type=pytesseract.Output.DICT,
-        lang=active_ocr_langs(), config="--psm 11 --oem 3",
+        lang=active_ocr_langs(), config="--psm 6 --oem 3",
     )
     words = []
     n = len(raw["text"])

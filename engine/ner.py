@@ -64,12 +64,27 @@ def detect_entities(words, lines, page, img_w, img_h, counter, already_claimed):
         remaining_idxs = [i for i in line["word_idxs"] if i not in already_claimed]
         if len(remaining_idxs) < len(line["word_idxs"]) * 0.5:
             continue  # line mostly already masked by another detector — skip
+
+        # Low average OCR confidence on this line usually means garbled
+        # text (very common for a script Tesseract's active language
+        # models can't read, e.g. Arabic without an Arabic pack
+        # installed) — feeding that into an English NER model tends to
+        # produce nonsense "entities" rather than real ones, so skip it.
+        confs = [words[i]["conf"] for i in line["word_idxs"] if words[i]["conf"] >= 0]
+        if confs and (sum(confs) / len(confs)) < 50:
+            continue
+
         text = line["text"].strip()
         if len(text) < 3:
             continue
         doc = nlp(text)
         for ent in doc.ents:
             if ent.label_ not in _LABEL_MAP:
+                continue
+            clean = ent.text.strip()
+            # Single very short "word" entities (1-2 letters) are almost
+            # always OCR noise fragments, not real names/orgs/places.
+            if len(clean) < 3 or not any(c.isalpha() for c in clean):
                 continue
             field_type, display_label, category = _LABEL_MAP[ent.label_]
             idxs = _find_span_word_idxs(words, line["word_idxs"], ent.text) or line["word_idxs"]
