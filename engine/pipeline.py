@@ -43,6 +43,11 @@ def extract_fields(pdf_path: str, use_ner: bool = True):
         words, lines = ocr.ocr_page(image)
         ocr_cache.append((words, lines, img_w, img_h))
 
+        gemini_instances = ocr.extract_fields_with_gemini(page_idx, lines, img_w, img_h, counter, set())
+        if gemini_instances:
+            all_instances += gemini_instances
+            continue
+
         known, claimed = detectors.run_known_detectors(words, lines, page_idx, img_w, img_h, counter)
 
         gcc_instances, gcc_claimed = gcc_ids.run_gcc_detectors(

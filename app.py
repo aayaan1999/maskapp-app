@@ -63,6 +63,7 @@ def extract():
         return jsonify({
             "job_id": job_id, "num_pages": len(page_images), "groups": [],
             "ner_active": ner.ner_available(), "ocr_languages": ocr_langs,
+            "gemini_active": ocr.gemini_available(),
             "message": "No standard fields were detected automatically. "
                        "You can still describe what to mask in plain text below.",
         })
@@ -73,6 +74,7 @@ def extract():
         "groups": groups,
         "ner_active": ner.ner_available(),
         "ocr_languages": ocr_langs,
+        "gemini_active": ocr.gemini_available(),
     })
 
 
