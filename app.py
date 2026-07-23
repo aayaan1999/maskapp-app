@@ -57,7 +57,12 @@ def extract():
     jobs.save_instances(BASE_DIR, job_id, instances, len(page_images))
 
     groups = pipeline.group_for_ui(instances)
-    ocr_langs = ocr.active_ocr_langs()
+    documents = build_document_groups(instances)
+    # small PNG previews for frontend overlay; encoded as data URLs
+    try:
+        page_previews = [_encode_page_preview(img, width=900) for img in page_images]
+    except Exception:
+        page_previews = []
 
     if not groups:
         return jsonify({
@@ -72,6 +77,8 @@ def extract():
         "job_id": job_id,
         "num_pages": len(page_images),
         "groups": groups,
+        "documents": documents,
+        "page_previews": page_previews,
         "ner_active": ner.ner_available(),
         "ocr_languages": ocr_langs,
         "gemini_active": ocr.gemini_available(),

@@ -183,6 +183,108 @@
     return s.length > n ? s.slice(0, n) + "…" : s;
   }
 
+  // ---------- preview rendering and interaction ----------
+  function renderPreview(data) {
+    if (!previewContainer) return;
+    previewContainer.innerHTML = "";
+    const previews = data.page_previews || [];
+    const groups = data.groups || [];
+    // maps for selection syncing
+    const groupToInstanceIds = {};
+    const instanceToGroup = {};
+    if (!previews.length) return;
+
+    for (let pageIndex = 0; pageIndex < previews.length; pageIndex++) {
+      const src = previews[pageIndex];
+      const pageEl = document.createElement("div");
+      pageEl.className = "preview-page";
+      const img = document.createElement("img");
+      img.className = "preview-image";
+      img.src = src;
+      pageEl.appendChild(img);
+
+      img.addEventListener("load", () => {
+        const scale = img.clientWidth / img.naturalWidth || 1;
+        for (const g of groups) {
+          const bboxes = g.bboxes || [];
+          const pages = g.pages || [];
+          const instIds = g.instance_ids || [];
+          // store mapping
+          groupToInstanceIds[g.group_id] = instIds.slice();
+          for (const iid of instIds) instanceToGroup[iid] = g.group_id;
+          if (!pages.includes(pageIndex)) continue;
+          for (let i = 0; i < bboxes.length; i++) {
+            const bbox = bboxes[i];
+            const instanceId = instIds[i];
+            const [x0, y0, x1, y1] = bbox;
+            const box = document.createElement("button");
+            box.type = "button";
+            box.className = "preview-box";
+            box.dataset.groupId = g.group_id;
+            box.dataset.instanceId = instanceId;
+            box.style.left = `${x0 * scale}px`;
+            box.style.top = `${y0 * scale}px`;
+            box.style.width = `${(x1 - x0) * scale}px`;
+            box.style.height = `${(y1 - y0) * scale}px`;
+            box.addEventListener("click", (ev) => { ev.stopPropagation(); toggleInstance(instanceId); });
+            pageEl.appendChild(box);
+          }
+        }
+        updatePreviewSelection();
+      });
+
+      previewContainer.appendChild(pageEl);
+    }
+    // expose maps for later sync
+    previewContainer._groupToInstanceIds = groupToInstanceIds;
+    previewContainer._instanceToGroup = instanceToGroup;
+  }
+
+  // explicit per-instance selection set
+  const selectedInstanceIds = new Set();
+
+  function toggleInstance(instanceId) {
+    if (!instanceId) return;
+    if (selectedInstanceIds.has(instanceId)) selectedInstanceIds.delete(instanceId);
+    else selectedInstanceIds.add(instanceId);
+    // update group checkbox to reflect whether any instance in that group is selected
+    const groupId = previewContainer._instanceToGroup && previewContainer._instanceToGroup[instanceId];
+    if (groupId) {
+      const checkbox = groupsContainer.querySelector(`input[data-group-id="${groupId}"]`);
+      if (checkbox) checkbox.checked = groupMatchesSelected(groupId);
+    }
+    updatePreviewSelection();
+  }
+
+  function groupMatchesSelected(groupId) {
+    const insts = (previewContainer._groupToInstanceIds && previewContainer._groupToInstanceIds[groupId]) || [];
+    return insts.some(iid => selectedInstanceIds.has(iid));
+  }
+
+  function updatePreviewSelection() {
+    if (!previewContainer) return;
+    const checkedGroups = new Set(Array.from(groupsContainer.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.dataset.groupId));
+    previewContainer.querySelectorAll('.preview-box').forEach(box => {
+      const iid = box.dataset.instanceId;
+      const gid = box.dataset.groupId;
+      const selected = (iid && selectedInstanceIds.has(iid)) || checkedGroups.has(gid);
+      box.classList.toggle('preview-box--selected', !!selected);
+    });
+  }
+
+  groupsContainer.addEventListener('change', (e) => {
+    if (!(e.target && e.target.matches('input[type=checkbox]'))) return;
+    const groupId = e.target.dataset.groupId;
+    const checked = e.target.checked;
+    // when a group's checkbox changes, select/deselect all instances in that group
+    const insts = (previewContainer._groupToInstanceIds && previewContainer._groupToInstanceIds[groupId]) || [];
+    for (const iid of insts) {
+      if (checked) selectedInstanceIds.add(iid);
+      else selectedInstanceIds.delete(iid);
+    }
+    updatePreviewSelection();
+  });
+
   // ---------- step 3: mask & download ----------
   backBtn.addEventListener("click", () => {
     stepReview.hidden = true;

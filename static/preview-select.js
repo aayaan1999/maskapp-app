@@ -77,15 +77,12 @@
       window.removeEventListener('touchend', onUp);
       state = null;
 
-      // Map client-space selection -> original page-image pixels
-      // originalWidth / displayedClientWidth gives pixels-per-client-px
-      const root = document.querySelector('#preview-container');
-      const pageSizes = (root && root._pageSizes) || (previewPageEl.parentNode && previewPageEl.parentNode._pageSizes) || window._pageSizes || [];
-      const orig = pageSizes[pageIdx] || { width: img.naturalWidth, height: img.naturalHeight };
-      const nl = Math.max(0, Math.round(l * (orig.width / rect.width)));
-      const nt = Math.max(0, Math.round(t * (orig.height / rect.height)));
-      const nr = Math.min(orig.width, Math.round(r * (orig.width / rect.width)));
-      const nb = Math.min(orig.height, Math.round(b * (orig.height / rect.height)));
+      const sx = img.naturalWidth / rect.width;
+      const sy = img.naturalHeight / rect.height;
+      const nl = Math.max(0, Math.round(l * sx));
+      const nt = Math.max(0, Math.round(t * sy));
+      const nr = Math.min(img.naturalWidth, Math.round(r * sx));
+      const nb = Math.min(img.naturalHeight, Math.round(b * sy));
       if (nr - nl < 4 || nb - nt < 4) return;
 
       const pageAttr = previewPageEl.dataset.page;
