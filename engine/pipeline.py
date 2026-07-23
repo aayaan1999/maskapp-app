@@ -44,6 +44,7 @@ def extract_fields(pdf_path: str, use_ner: bool = True):
         ocr_cache.append((words, lines, img_w, img_h))
 
         known, claimed = detectors.run_known_detectors(words, lines, page_idx, img_w, img_h, counter)
+        known = detectors.reassociate_unlabelled_dates(known, lines, words)
 
         gcc_instances, gcc_claimed = gcc_ids.run_gcc_detectors(
             words, lines, page_idx, img_w, img_h, counter, claimed)

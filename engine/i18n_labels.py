@@ -13,7 +13,33 @@ direction. Tesseract lays LTR and RTL words out left-to-right by pixel
 position; we never rely on "the value is after the label", only on
 "the value is somewhere else on this same line" (see
 detectors.line_value_excluding_label).
+
+Arabic/Urdu text is normalized before comparison (see normalize()) —
+Arabic has several "alef" letterforms (ا / أ / إ / آ) that fonts and
+OCR both use interchangeably for the same word (e.g. a printed card
+using "الإسم" won't literally contain the substring "الاسم"), plus
+optional diacritics that add no meaning for matching purposes. Without
+normalizing both the stored keyword and the OCR'd text the same way, a
+label spelled with a different alef variant than whatever's hardcoded
+here silently fails to match — which is exactly what happened with
+"Name" on a real Emirates ID card.
 """
+
+import re
+
+_ARABIC_DIACRITICS = re.compile(r'[\u064B-\u0652\u0670\u0640]')
+_ARABIC_ALEF_VARIANTS = re.compile(r'[إأآٱ]')
+
+
+def normalize(text: str) -> str:
+    """Lowercase + fold Arabic letterform/diacritic variants so keyword
+    matching is robust to OCR/font spelling differences. No-op (beyond
+    lowercasing) for non-Arabic-script text."""
+    text = text.lower()
+    text = _ARABIC_DIACRITICS.sub('', text)
+    text = _ARABIC_ALEF_VARIANTS.sub('ا', text)
+    text = text.replace('ة', 'ه').replace('ى', 'ي')
+    return text
 
 LABELS = {
     "name": {
@@ -32,15 +58,15 @@ LABELS = {
         "ar": ["تاريخ الميلاد"],
     },
     "date_of_issue": {
-        "en": ["date of issue", "issue date", "issued on", "issuing date"],
+        "en": ["date of issue", "issue date", "issued on", "issuing date", "issue"],
         "ur": ["تاریخ اجراء", "اجراء کی تاریخ"],
-        "ar": ["تاريخ الإصدار"],
+        "ar": ["تاريخ الإصدار", "الإصدار"],
     },
     "date_of_expiry": {
         "en": ["date of expiry", "expiry date", "expiration date",
-               "date of validation", "valid until", "validity", "valid till"],
+               "date of validation", "valid until", "validity", "valid till", "expiry"],
         "ur": ["تاریخ اختتام", "میعاد ختم", "تاریخ ختم"],
-        "ar": ["تاريخ الانتهاء", "تاريخ الانتهاء الصلاحية"],
+        "ar": ["تاريخ الانتهاء", "تاريخ الانتهاء الصلاحية", "الانتهاء"],
     },
     "nationality": {
         "en": ["nationality"],
@@ -82,12 +108,44 @@ def all_keywords(concept: str):
 
 
 def line_matches_concept(line_text: str, concept: str) -> bool:
-    tl = line_text.lower()
-    return any(kw.lower() in tl for kw in all_keywords(concept))
+    return contains_any_keyword(line_text, all_keywords(concept))
 
 
 def matched_concepts(line_text: str):
     """Every concept whose keyword appears in this line."""
-    tl = line_text.lower()
-    return [c for c, langs in LABELS.items()
-            if any(kw.lower() in tl for kw in [k for kws in langs.values() for k in kws])]
+    return [c for c in LABELS if contains_any_keyword(line_text, all_keywords(c))]
+
+
+def find_keyword_in_text(line_text: str, concept: str):
+    """Returns the first matching keyword (original spelling, for
+    locating its words) for this concept in this line, or None."""
+    norm_line = normalize(line_text)
+    for kw in all_keywords(concept):
+        if normalize(kw) in norm_line:
+            return kw
+    return None
+
+
+def _tokenize(text: str):
+    return re.findall(r'\w+', normalize(text), re.UNICODE)
+
+
+def contains_keyword(line_text: str, keyword: str) -> bool:
+    """
+    Word-boundary-aware match: True only if `keyword` appears as a
+    whole token (or contiguous run of tokens, for multi-word keywords)
+    in line_text — not merely as a substring. Plain substring matching
+    on common short words like "state" or "pin" produces false
+    positives inside unrelated words ("United States", "pinch"); this
+    tokenizes both sides first so "state" no longer matches "states".
+    """
+    kw_tokens = _tokenize(keyword)
+    if not kw_tokens:
+        return False
+    line_tokens = _tokenize(line_text)
+    n = len(kw_tokens)
+    return any(line_tokens[i:i + n] == kw_tokens for i in range(len(line_tokens) - n + 1))
+
+
+def contains_any_keyword(line_text: str, keywords) -> bool:
+    return any(contains_keyword(line_text, kw) for kw in keywords)

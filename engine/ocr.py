@@ -31,6 +31,19 @@ PREFERRED_LANGS = ["eng", "urd", "ara"]
 
 _active_lang_string = None
 
+# Arabic-Indic (٠-٩) and Extended Arabic-Indic/Persian (۰-۹) digits, mapped
+# to plain Western 0-9. When Tesseract's Arabic model is active it can
+# render printed Western-numeral dates/IDs using either digit form —
+# every numeric regex in this app (dates, Emirates ID, phone numbers...)
+# only matches ASCII 0-9, so without this normalization those fields
+# would silently fail to be recognized at all despite OCR reading the
+# characters correctly.
+_DIGIT_TRANS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+
+def _normalize_digits(text: str) -> str:
+    return text.translate(_DIGIT_TRANS)
+
 
 def _installed_langs():
     try:
@@ -127,7 +140,7 @@ def ocr_page(image):
     """
     raw = pytesseract.image_to_data(
         image, output_type=pytesseract.Output.DICT,
-        lang=active_ocr_langs(), config="--psm 11 --oem 3",
+        lang=active_ocr_langs(), config="--psm 6 --oem 3",
     )
     words = []
     n = len(raw["text"])
@@ -135,6 +148,7 @@ def ocr_page(image):
         text = raw["text"][i]
         if not text or not text.strip():
             continue
+        text = _normalize_digits(text)
         left, top = raw["left"][i], raw["top"][i]
         width, height = raw["width"][i], raw["height"][i]
         words.append({
