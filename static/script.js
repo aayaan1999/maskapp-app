@@ -7,6 +7,7 @@
   const stepUpload = document.getElementById("step-upload");
   const stepReview = document.getElementById("step-review");
   const reviewSubhead = document.getElementById("review-subhead");
+  const previewContainer = document.getElementById("preview-container");
   const groupsContainer = document.getElementById("groups-container");
   const instructionsEl = document.getElementById("instructions");
   const maskBtn = document.getElementById("mask-btn");
@@ -65,6 +66,7 @@
         return;
       }
       currentJobId = data.job_id;
+      renderPreviews(data);
       renderGroups(data);
       setStatus(uploadStatus, "", null);
       dropzone.classList.remove("dropzone--busy");
@@ -74,6 +76,35 @@
       setStatus(uploadStatus, "Network error — please try again.", "error");
       dropzone.classList.remove("dropzone--busy");
     }
+  }
+
+  function renderPreviews(data) {
+    previewContainer.innerHTML = "";
+    previewContainer.hidden = !data.num_pages;
+    if (!data.num_pages || !currentJobId) return;
+
+    const pagesWrap = document.createElement("div");
+    pagesWrap.className = "preview-pages";
+
+    for (let idx = 0; idx < data.num_pages; idx += 1) {
+      const pageCard = document.createElement("div");
+      pageCard.className = "preview-page";
+
+      const img = document.createElement("img");
+      img.className = "preview-page__image";
+      img.src = `/job-preview/${currentJobId}/${idx}`;
+      img.alt = `Page ${idx + 1}`;
+
+      const label = document.createElement("span");
+      label.className = "preview-page__label";
+      label.textContent = `PAGE ${idx + 1}`;
+
+      pageCard.appendChild(img);
+      pageCard.appendChild(label);
+      pagesWrap.appendChild(pageCard);
+    }
+
+    previewContainer.appendChild(pagesWrap);
   }
 
   // ---------- step 2: render detected field groups ----------
@@ -159,6 +190,8 @@
     fileInput.value = "";
     fileNameEl.textContent = "";
     instructionsEl.value = "";
+    previewContainer.innerHTML = "";
+    previewContainer.hidden = true;
     setStatus(maskStatus, "", null);
     currentJobId = null;
   });

@@ -153,6 +153,41 @@ html, body {
   color: var(--text);
 }
 
+/* ── Preview pages ── */
+.preview-container {
+  margin-bottom: 24px;
+}
+
+.preview-pages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.preview-page {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.preview-page__image {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  background: #0f1319;
+}
+
+.preview-page__label {
+  display: block;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
 /* ── Field groups ── */
 .groups { margin-bottom: 8px; }
 

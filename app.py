@@ -78,6 +78,14 @@ def extract():
     })
 
 
+@app.route("/job-preview/<job_id>/<int:page_idx>")
+def job_preview(job_id, page_idx):
+    image_path = os.path.join(BASE_DIR, "jobs", job_id, f"page_{page_idx}.png")
+    if not os.path.exists(image_path):
+        return jsonify({"error": "Preview not found"}), 404
+    return send_file(image_path, mimetype="image/png")
+
+
 @app.route("/mask", methods=["POST"])
 def mask():
     body = request.get_json(silent=True) or {}
