@@ -6,7 +6,7 @@ Ties the whole thing together:
   render_masked_pdf() page images + chosen instances -> masked PDF file
 """
 
-from . import ocr, detectors, tables, ner, custom
+from . import ocr, detectors, tables, ner, custom, gcc_ids
 from .detectors import InstanceCounter
 from .masking import apply_redactions
 
@@ -45,18 +45,26 @@ def extract_fields(pdf_path: str, use_ner: bool = True):
 
         known, claimed = detectors.run_known_detectors(words, lines, page_idx, img_w, img_h, counter)
 
+        gcc_instances, gcc_claimed = gcc_ids.run_gcc_detectors(
+            words, lines, page_idx, img_w, img_h, counter, claimed)
+        claimed |= gcc_claimed
+
         table_instances = tables.detect_table_columns(words, lines, page_idx, img_w, img_h, counter)
 
-        # A bare date pattern (used for "Date of Birth") is ambiguous with
-        # every transaction/statement date — if a table was found on this
-        # page and a "dob" match sits inside one of its cells, it's a
-        # statement date, not a birthdate, so drop it.
+        # Any bare date match (DOB, issue, expiry, or unlabelled) is
+        # ambiguous with a transaction/statement date — if it sits
+        # inside a cell of a table already found on this page, the
+        # table's own "Statement Date" column already represents it,
+        # so drop the duplicate here rather than offering the same
+        # date twice under two different group names.
+        _DATE_TYPES = {"dob", "date_of_issue", "date_of_expiry", "date_unlabelled"}
         if table_instances:
             known = [inst for inst in known
-                     if not (inst["field_type"] == "dob"
+                     if not (inst["field_type"] in _DATE_TYPES
                              and any(_bbox_overlaps(inst["bbox"], t["bbox"]) for t in table_instances))]
 
         all_instances += known
+        all_instances += gcc_instances
         all_instances += table_instances
 
         generic = detectors.detect_generic_labels(words, lines, page_idx, img_w, img_h, counter, claimed)
@@ -107,25 +115,16 @@ def group_for_ui(instances):
                 "count": 0,
                 "sample_values": [],
                 "instance_ids": [],
-                "bboxes": [],
-                "pages": set(),
             }
         g = groups[key]
         g["count"] += 1
         g["instance_ids"].append(inst["id"])
-        # collect bboxes and pages so frontend can draw previews
-        if "bbox" in inst:
-            g["bboxes"].append(inst["bbox"])
-        g["pages"].add(inst.get("page", 0))
         if len(g["sample_values"]) < 3:
             g["sample_values"].append(inst["value"])
 
     grouped = list(groups.values())
-    # convert pages set -> sorted list for JSON serialisation
-    for g in grouped:
-        g["pages"] = sorted(list(g["pages"]))
-
-    grouped.sort(key=lambda g: (CATEGORY_ORDER.index(g["category"]) if g["category"] in CATEGORY_ORDER else 99,
+    grouped.sort(key=lambda g: (CATEGORY_ORDER.index(g["category"])
+                                 if g["category"] in CATEGORY_ORDER else 99,
                                  -g["count"]))
     return grouped
 
@@ -142,4 +141,10 @@ def render_masked_pdf(page_images, instances, output_path):
 
     first = masked_pages[0].convert("RGB")
     rest = [p.convert("RGB") for p in masked_pages[1:]]
-    first.save(output_path, save_all=True, append_images=rest)
+    # Without an explicit resolution, Pillow assumes 72 DPI when writing
+    # the PDF page size — since our page images are rendered at
+    # ocr.DPI (300), that silently produced PDF pages ~4x too large
+    # physically (a 300dpi 2481x3508px page written out as a
+    # 2481x3508-*point* page). Passing the real resolution keeps the
+    # output page the same physical size as the source document.
+    first.save(output_path, save_all=True, append_images=rest, resolution=ocr.DPI)

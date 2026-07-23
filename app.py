@@ -1,11 +1,9 @@
 import os
 import uuid
-import base64
-from io import BytesIO
 
 from flask import Flask, request, render_template, send_file, jsonify, after_this_request
 
-from engine import pipeline, jobs, ner
+from engine import pipeline, jobs, ner, ocr
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -20,65 +18,10 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
 
-def infer_doc_label(instances):
-    field_types = {inst["field_type"] for inst in instances}
-    if "aadhaar_number" in field_types or "aadhaar_name" in field_types:
-        return "Aadhaar Card"
-    if "pan_number" in field_types or "pan_name" in field_types:
-        return "PAN Card"
-    if "credit_card_number" in field_types:
-        return "Credit Card"
-    if "dob" in field_types and "person_name" in field_types:
-        return "Identity Document"
-    return "Document"
-
-
-def build_document_groups(instances):
-    pages = {}
-    for inst in instances:
-        pages.setdefault(inst["page"], []).append(inst)
-
-    documents = []
-    for page in sorted(pages):
-        page_insts = pages[page]
-        fields = {}
-        for inst in page_insts:
-            key = (inst["category"], inst["field_type"], inst["display_label"])
-            if key not in fields:
-                fields[key] = {
-                    "group_id": f"{page}::{inst['category']}::{inst['field_type']}::{inst['display_label']}",
-                    "category": inst["category"],
-                    "display_label": inst["display_label"],
-                    "count": 0,
-                    "sample_values": [],
-                }
-            fields[key]["count"] += 1
-            if len(fields[key]["sample_values"]) < 3:
-                fields[key]["sample_values"].append(inst["value"])
-
-        documents.append({
-            "page": page,
-            "label": infer_doc_label(page_insts),
-            "fields": sorted(fields.values(), key=lambda f: (f["category"], f["display_label"])),
-        })
-    return documents
-
-
-def _encode_page_preview(image, width=900):
-    """Resize a PIL image and return a data URL (PNG) for frontend previews."""
-    try:
-        ratio = width / image.width
-        preview = image.resize((int(width), int(image.height * ratio)))
-    except Exception:
-        preview = image
-    buf = BytesIO()
-    preview.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-
-
 @app.route("/")
 def index():
-    return render_template("index.html", ner_active=ner.ner_available())
+    return render_template("index.html", ner_active=ner.ner_available(),
+                            ocr_languages=ocr.active_ocr_langs())
 
 
 @app.route("/extract", methods=["POST"])
@@ -114,24 +57,12 @@ def extract():
     jobs.save_instances(BASE_DIR, job_id, instances, len(page_images))
 
     groups = pipeline.group_for_ui(instances)
-    documents = build_document_groups(instances)
-    # small PNG previews for frontend overlay; encoded as data URLs
-    try:
-        page_previews = [_encode_page_preview(img, width=900) for img in page_images]
-        # include original page sizes so frontend can map preview coords -> original pixels
-        page_sizes = [{"width": img.width, "height": img.height} for img in page_images]
-    except Exception:
-        page_previews = []
-        page_sizes = []
+    ocr_langs = ocr.active_ocr_langs()
 
-    if not groups and not documents:
+    if not groups:
         return jsonify({
-            "job_id": job_id,
-            "num_pages": len(page_images),
-            "groups": [],
-            "documents": [],
-            "page_previews": page_previews,
-            "ner_active": ner.ner_available(),
+            "job_id": job_id, "num_pages": len(page_images), "groups": [],
+            "ner_active": ner.ner_available(), "ocr_languages": ocr_langs,
             "message": "No standard fields were detected automatically. "
                        "You can still describe what to mask in plain text below.",
         })
@@ -140,10 +71,8 @@ def extract():
         "job_id": job_id,
         "num_pages": len(page_images),
         "groups": groups,
-        "documents": documents,
-        "page_previews": page_previews,
-        "page_sizes": page_sizes,
         "ner_active": ner.ner_available(),
+        "ocr_languages": ocr_langs,
     })
 
 
@@ -152,7 +81,6 @@ def mask():
     body = request.get_json(silent=True) or {}
     job_id = body.get("job_id")
     selected_group_ids = set(body.get("group_ids", []))
-    selected_instance_ids = set(body.get("instance_ids", []) or body.get("instance_ids", []))
     instructions = (body.get("instructions") or "").strip()
 
     if not job_id:
@@ -165,47 +93,17 @@ def mask():
     all_instances = job_data["instances"]
     num_pages = job_data["num_pages"]
 
-    # If explicit instance ids were passed (user clicked boxes), prefer those.
-    if selected_instance_ids:
-        selected_instances = [inst for inst in all_instances if inst.get("id") in selected_instance_ids]
-    else:
-        # Re-derive each instance's group_id the same way group_for_ui does,
-        # so a selected checkbox maps back to every matching instance.
-        selected_instances = [
-            inst for inst in all_instances
-            if f"{inst['page']}::{inst['category']}::{inst['field_type']}::{inst['display_label']}" in selected_group_ids
-            or f"{inst['category']}::{inst['field_type']}::{inst['display_label']}" in selected_group_ids
-        ]
+    # Re-derive each instance's group_id the same way group_for_ui does,
+    # so a selected checkbox maps back to every matching instance.
+    selected_instances = [
+        inst for inst in all_instances
+        if f"{inst['category']}::{inst['field_type']}::{inst['display_label']}" in selected_group_ids
+    ]
 
     if instructions:
         ocr_cache = jobs.load_ocr_data(BASE_DIR, job_id)
         if ocr_cache:
             selected_instances += pipeline.run_custom_search(ocr_cache, instructions)
-
-    # Accept custom drawn bboxes from the frontend and convert to synthetic instances
-    custom_bboxes = body.get("custom_bboxes", []) or []
-    if custom_bboxes:
-        synthetic_instances = []
-        for i, cb in enumerate(custom_bboxes):
-            try:
-                page = int(cb.get("page", 0))
-                bbox = tuple(cb["bbox"])
-                if len(bbox) != 4:
-                    continue
-            except Exception:
-                continue
-            inst = {
-                "id": cb.get("id", f"custom-{i+1}"),
-                "field_type": "custom",
-                "display_label": "custom",
-                "category": "custom",
-                "value": None,
-                "page": page,
-                "bbox": bbox,
-            }
-            synthetic_instances.append(inst)
-        if synthetic_instances:
-            selected_instances.extend(synthetic_instances)
 
     if not selected_instances:
         return jsonify({"error": "Select at least one field, or describe what to mask"}), 400
@@ -240,7 +138,8 @@ def mask():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "ner_active": ner.ner_available()})
+    return jsonify({"status": "ok", "ner_active": ner.ner_available(),
+                     "ocr_languages": ocr.active_ocr_langs()})
 
 
 if __name__ == "__main__":

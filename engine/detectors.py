@@ -8,39 +8,36 @@ a list of `instance` dicts with a common shape so the pipeline can treat
 them uniformly.
 """
 
-import json
 import re
-from .bank_statement import load_bank_statement_config
 from .ocr import words_bbox
-
-config = load_bank_statement_config()
-regex_fields = config.get("regex_fields", {})
-IBAN_PATTERN = re.compile(regex_fields.get("iban", r'\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b'))
-ACCOUNT_NO_PATTERN = re.compile(regex_fields.get("account_number", r'\b\d{9,18}\b'))
-PHONE_PATTERN = re.compile(regex_fields.get("phone_number", r'\b(?:\+91|0)?[6-9]\d{9}\b'))
-EMAIL_PATTERN = re.compile(regex_fields.get("email", r'\b[\w._%+-]+@[\w.-]+\.\w{2,}\b'))
+from . import i18n_labels
 
 AADHAAR_12 = re.compile(r'^\d{12}$')
 AADHAAR_4DIGIT = re.compile(r'^\d{4}$')
 AADHAAR_8DIGIT = re.compile(r'^\d{8}$')
-DOB_PATTERN = re.compile(r'\b\d{1,2}[\/\-\.]\d{2}[\/\-\.]\d{2,4}\b')
 PAN_PATTERN = re.compile(r'\b[A-Z]{5}\d{4}[A-Z]\b')
+PHONE_PATTERN = re.compile(r'\b[6-9]\d{9}\b|\b\+91[-\s]?\d{10}\b')
+EMAIL_PATTERN = re.compile(r'\b[\w._%+-]+@[\w.-]+\.\w{2,}\b')
 CARD_FULL = re.compile(r'^\d{13,19}$')
 CARD_GROUP_4 = re.compile(r'^\d{4}$')
 PIN_PATTERN = re.compile(r'\b\d{6}\b')
 PIN_FULLTOKEN = re.compile(r'^\d{6}$')  # whole-token match, so "105000.00" doesn't qualify
 IFSC_PATTERN = re.compile(r'\b[A-Z]{4}0[A-Z0-9]{6}\b')
+ACCOUNT_NO_PATTERN = re.compile(r'\b\d{9,18}\b')
 
-NAME_KEYWORDS = ["name", "नाम"]
+NAME_KEYWORDS = ["name", "नाम"] + i18n_labels.all_keywords("name")
 ADDR_KEYWORDS = ["address", "पता", "addr", "s/o", "w/o", "d/o", "house",
-                 "village", "dist", "pin", "state", "road", "nagar", "colony"]
+                 "village", "dist", "pin", "state", "road", "nagar", "colony"] + i18n_labels.all_keywords("address")
 
 # Labels the specific detectors already own — the generic detector skips
 # these so a field isn't reported twice under two different names.
 _OWNED_LABEL_PATTERNS = re.compile(
     r'aadhaar|aadhar|uid|pan\b|permanent account|date of birth|\bdob\b|'
     r'd\.o\.b|phone|mobile|contact no|e-?mail|address|card number|'
-    r'card no|debit card|credit card',
+    r'card no|debit card|credit card|date of issue|issue date|'
+    r'date of expiry|expiry date|expiration date|validity|valid until|'
+    r'valid till|date of validation|passport no|passport number|'
+    r'national id|civil id|emirates id|iqama|\bqid\b|identity number',
     re.I,
 )
 
@@ -112,13 +109,57 @@ def detect_pan_number(words, lines, page, img_w, img_h, counter):
     return out, seen
 
 
-def detect_dob(words, lines, page, img_w, img_h, counter):
+DATE_PATTERN = re.compile(
+    r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b|'
+    r'\b\d{1,2}[\-\s][A-Za-z]{3,9}[\-\s]\d{2,4}\b'
+)
+
+DATE_CONCEPT_LABELS = {
+    "dob": "Date of Birth",
+    "date_of_issue": "Date of Issue",
+    "date_of_expiry": "Date of Expiry",
+}
+
+
+def detect_labelled_dates(words, lines, page, img_w, img_h, counter):
+    """
+    Finds date-shaped tokens and classifies each one by whichever
+    date-related label (DOB / issue / expiry) appears on the *same
+    line* — checked as "does this concept's keyword appear anywhere in
+    the line", not "does it come right before the date". That
+    direction-agnostic check is what makes this correct for RTL Urdu/
+    Arabic lines, where the value can sit to either side of its label
+    depending on layout, not just after it in pixel order.
+
+    This replaces a blanket "any date-shaped text = Date of Birth"
+    detector, which used to also catch expiry/issue/validity dates and
+    mask them whenever DOB was selected.
+    """
     out, seen = [], set()
-    for i, w in enumerate(words):
-        if DOB_PATTERN.search(w["text"]) and w["conf"] > 25:
-            out.append(_mk("dob", "Date of Birth", "identity", w["text"],
-                            page, words_bbox(words, [i], img_w, img_h), counter.next()))
-            seen.add(i)
+    for line in lines:
+        concepts_here = [c for c in ("dob", "date_of_issue", "date_of_expiry")
+                          if i18n_labels.line_matches_concept(line["text"], c)]
+        date_idxs = [i for i in line["word_idxs"] if DATE_PATTERN.search(words[i]["text"])
+                     and words[i]["conf"] > 20]
+        if not date_idxs:
+            continue
+
+        if concepts_here:
+            # A line can legitimately name more than one date concept
+            # (rare, but "Issued/Expiry: dd/mm - dd/mm" happens) — in
+            # that case every date on the line gets tagged under every
+            # concept found, since we can't reliably tell which date is
+            # which without deeper layout parsing, and over-offering a
+            # checkbox is far safer than silently under-masking one.
+            for concept in concepts_here:
+                val = " ".join(words[i]["text"] for i in date_idxs)
+                out.append(_mk(concept, DATE_CONCEPT_LABELS[concept], "identity", val,
+                                page, words_bbox(words, date_idxs, img_w, img_h), counter.next()))
+        else:
+            for i in date_idxs:
+                out.append(_mk("date_unlabelled", "Date (unlabelled)", "generic", words[i]["text"],
+                                page, words_bbox(words, [i], img_w, img_h), counter.next()))
+        seen.update(date_idxs)
     return out, seen
 
 
@@ -142,26 +183,6 @@ def detect_email(words, lines, page, img_w, img_h, counter):
     return out, seen
 
 
-def detect_iban(words, lines, page, img_w, img_h, counter):
-    out, seen = [], set()
-    for i, w in enumerate(words):
-        if IBAN_PATTERN.search(w["text"]):
-            out.append(_mk("iban", "IBAN", "financial", w["text"],
-                            page, words_bbox(words, [i], img_w, img_h), counter.next()))
-            seen.add(i)
-    return out, seen
-
-
-def detect_account_number(words, lines, page, img_w, img_h, counter):
-    out, seen = [], set()
-    for i, w in enumerate(words):
-        if ACCOUNT_NO_PATTERN.search(w["text"]) and w["conf"] > 20:
-            out.append(_mk("account_number", "Account Number", "financial", w["text"],
-                            page, words_bbox(words, [i], img_w, img_h), counter.next()))
-            seen.add(i)
-    return out, seen
-
-
 def detect_card_number(words, lines, page, img_w, img_h, counter):
     out, seen = [], set()
     n = len(words)
@@ -169,7 +190,8 @@ def detect_card_number(words, lines, page, img_w, img_h, counter):
         if i in seen:
             continue
         w = words[i]
-        if CARD_FULL.match(w["text"]) and w["conf"] > 15:
+        if CARD_FULL.match(w["text"]) and w["conf"] > 15 and not (
+                len(w["text"]) == 15 and w["text"].startswith("784")):
             out.append(_mk("credit_card_number", "Card Number", "financial", w["text"],
                             page, words_bbox(words, [i], img_w, img_h), counter.next()))
             seen.add(i)
@@ -234,40 +256,42 @@ def detect_address(words, lines, page, img_w, img_h, counter):
 
 
 def detect_name(words, lines, page, img_w, img_h, counter):
-    """Value following a 'Name:' style label (handles bilingual labels)."""
+    """
+    Line-based and order-independent: captures every word on a
+    name-labelled line except the label token(s) themselves, rather
+    than assuming "the value follows the label". A pure LTR assumption
+    breaks on RTL Urdu/Arabic lines, where Tesseract still lays words
+    out left-to-right by pixel position but the value can sit on
+    either side of the label depending on the printed layout.
+    """
     out, seen = [], set()
-    n = len(words)
-    i = 0
-    while i < n:
-        w = words[i]
-        if any(kw in w["text"].lower() for kw in NAME_KEYWORDS) and w["conf"] > 10:
-            j = i + 1
-            while j < n and (words[j]["text"].strip() in ("/", "-", ":", "|", "")
-                              or any(kw in words[j]["text"].lower() for kw in NAME_KEYWORDS)):
-                j += 1
-            if j >= n:
-                i = j
-                continue
-            value_line = words[j]["line_key"]
-            name_idxs = []
-            for k in range(j, min(j + 8, n)):
-                if words[k]["line_key"] != value_line:
-                    break
-                if any(kw in words[k]["text"].lower() for kw in NAME_KEYWORDS):
-                    break
-                if re.match(r'^\d+$', words[k]["text"]) and len(words[k]["text"]) > 4:
-                    break
-                name_idxs.append(k)
-                if len(name_idxs) == 4:
-                    break
-            if name_idxs:
-                val = " ".join(words[k]["text"] for k in name_idxs)
-                out.append(_mk("person_name", "Name", "identity", val,
-                                page, words_bbox(words, name_idxs, img_w, img_h), counter.next()))
-                seen.update(name_idxs)
-            i = j
-        else:
-            i += 1
+    claimed_lines = set()
+    for li, line in enumerate(lines):
+        tl = line["text"].lower()
+        if not any(kw.lower() in tl for kw in NAME_KEYWORDS) or li in claimed_lines:
+            continue
+        label_idxs = {i for i in line["word_idxs"] if any(
+            kw.lower() in words[i]["text"].lower() for kw in NAME_KEYWORDS)}
+        value_idxs = [i for i in line["word_idxs"]
+                      if i not in label_idxs and words[i]["text"].strip(" /-:|") != ""]
+        claimed_lines.add(li)
+
+        if not value_idxs and li + 1 < len(lines):
+            # Label-only line (value wraps to the next row) — same
+            # continuation guard used by detect_address.
+            nxt = lines[li + 1]
+            gap = nxt["top"] - line["bottom"]
+            avg_h = max(1, line["bottom"] - line["top"])
+            if gap < avg_h * 1.5 and not _LABEL_LINE.match(nxt["text"]):
+                value_idxs = list(nxt["word_idxs"])
+                claimed_lines.add(li + 1)
+
+        if not value_idxs:
+            continue
+        val = " ".join(words[i]["text"] for i in value_idxs)
+        out.append(_mk("person_name", "Name", "identity", val,
+                        page, words_bbox(words, value_idxs, img_w, img_h), counter.next()))
+        seen.update(value_idxs)
     return out, seen
 
 
@@ -300,8 +324,8 @@ def detect_generic_labels(words, lines, page, img_w, img_h, counter, already_cla
 
 
 ALL_KNOWN_FIELD_TYPES = [
-    "aadhaar_number", "person_name", "pan_number", "dob", "address",
-    "credit_card_number", "phone_number", "email",
+    "aadhaar_number", "person_name", "pan_number", "dob", "date_of_issue",
+    "date_of_expiry", "address", "credit_card_number", "phone_number", "email",
 ]
 
 FIELD_TYPE_LABELS = {
@@ -309,6 +333,8 @@ FIELD_TYPE_LABELS = {
     "person_name": "Name",
     "pan_number": "PAN Number",
     "dob": "Date of Birth",
+    "date_of_issue": "Date of Issue",
+    "date_of_expiry": "Date of Expiry",
     "address": "Address",
     "credit_card_number": "Card Number",
     "phone_number": "Phone Number",
@@ -320,9 +346,8 @@ def run_known_detectors(words, lines, page, img_w, img_h, counter):
     """Runs every specific detector and returns (instances, claimed_word_idxs)."""
     instances = []
     claimed = set()
-    for fn in (detect_aadhaar_number, detect_pan_number, detect_dob, detect_phone,
-               detect_email, detect_iban, detect_account_number,
-               detect_card_number, detect_address, detect_name):
+    for fn in (detect_aadhaar_number, detect_pan_number, detect_labelled_dates, detect_phone,
+               detect_email, detect_card_number, detect_address, detect_name):
         found, seen = fn(words, lines, page, img_w, img_h, counter)
         instances += found
         claimed |= seen

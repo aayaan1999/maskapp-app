@@ -8,7 +8,6 @@
   const stepReview = document.getElementById("step-review");
   const reviewSubhead = document.getElementById("review-subhead");
   const groupsContainer = document.getElementById("groups-container");
-  const previewContainer = document.getElementById("preview-container");
   const instructionsEl = document.getElementById("instructions");
   const maskBtn = document.getElementById("mask-btn");
   const backBtn = document.getElementById("back-btn");
@@ -84,51 +83,6 @@
       ? `${data.num_pages} page(s) scanned. Select what to mask — checking one masks every occurrence.`
       : "Select what to mask — checking one masks every occurrence.";
 
-    if (data.documents && data.documents.length) {
-      const template = document.getElementById("document-template");
-      for (const doc of data.documents) {
-        const section = template.content.firstElementChild.cloneNode(true);
-        section.querySelector(".document-panel__label").textContent = doc.label;
-        section.querySelector(".document-panel__page").textContent = `Page ${doc.page + 1}`;
-        const fieldsGrid = section.querySelector(".document-panel__fields");
-        for (const g of doc.fields) {
-          const label = document.createElement("label");
-          label.className = "field-toggle field-toggle--rich";
-
-          const checkbox = document.createElement("input");
-          checkbox.type = "checkbox";
-          checkbox.value = g.group_id;
-          checkbox.checked = DEFAULT_ON_CATEGORIES.has(g.category);
-          checkbox.dataset.groupId = g.group_id;
-
-          const box = document.createElement("span");
-          box.className = "field-toggle__box";
-
-          const textWrap = document.createElement("span");
-          textWrap.className = "field-toggle__text";
-
-          const title = document.createElement("span");
-          title.className = "field-toggle__label";
-          title.textContent = `${g.display_label} (${g.count} found)`;
-
-          const sample = document.createElement("span");
-          sample.className = "field-toggle__sample";
-          const preview = (g.sample_values || []).map(truncate).join(" · ");
-          sample.textContent = preview;
-
-          textWrap.appendChild(title);
-          if (preview) textWrap.appendChild(sample);
-          label.appendChild(checkbox);
-          label.appendChild(box);
-          label.appendChild(textWrap);
-          fieldsGrid.appendChild(label);
-        }
-        groupsContainer.appendChild(section);
-      }
-      renderPreview(data);
-      return;
-    }
-
     if (!data.groups || data.groups.length === 0) {
       const empty = document.createElement("p");
       empty.className = "subhead";
@@ -191,120 +145,12 @@
       section.appendChild(grid);
       groupsContainer.appendChild(section);
     }
-    renderPreview(data);
   }
 
   function truncate(s, n = 42) {
     if (!s) return "";
     return s.length > n ? s.slice(0, n) + "…" : s;
   }
-
-  // ---------- preview rendering and interaction ----------
-  function renderPreview(data) {
-    if (!previewContainer) return;
-    previewContainer.innerHTML = "";
-    const previews = data.page_previews || [];
-    const pageSizes = data.page_sizes || [];
-    const groups = data.groups || [];
-    // maps for selection syncing
-    const groupToInstanceIds = {};
-    const instanceToGroup = {};
-    if (!previews.length) return;
-
-    for (let pageIndex = 0; pageIndex < previews.length; pageIndex++) {
-      const src = previews[pageIndex];
-      const pageEl = document.createElement("div");
-      pageEl.className = "preview-page";
-      pageEl.dataset.page = pageIndex;
-      const img = document.createElement("img");
-      img.className = "preview-image";
-      img.src = src;
-      pageEl.appendChild(img);
-
-      img.addEventListener("load", () => {
-        // map instance bbox (which are in original page pixels) to displayed preview
-        const orig = pageSizes[pageIndex] || { width: img.naturalWidth, height: img.naturalHeight };
-        const scale = img.clientWidth / orig.width || 1;
-        for (const g of groups) {
-          const bboxes = g.bboxes || [];
-          const pages = g.pages || [];
-          const instIds = g.instance_ids || [];
-          // store mapping
-          groupToInstanceIds[g.group_id] = instIds.slice();
-          for (const iid of instIds) instanceToGroup[iid] = g.group_id;
-          if (!pages.includes(pageIndex)) continue;
-          for (let i = 0; i < bboxes.length; i++) {
-            const bbox = bboxes[i];
-            const instanceId = instIds[i];
-            const [x0, y0, x1, y1] = bbox;
-            const box = document.createElement("button");
-            box.type = "button";
-            box.className = "preview-box";
-            box.dataset.groupId = g.group_id;
-            box.dataset.instanceId = instanceId;
-            box.style.left = `${x0 * scale}px`;
-            box.style.top = `${y0 * scale}px`;
-            box.style.width = `${(x1 - x0) * scale}px`;
-            box.style.height = `${(y1 - y0) * scale}px`;
-            box.addEventListener("click", (ev) => { ev.stopPropagation(); toggleInstance(instanceId); });
-            pageEl.appendChild(box);
-          }
-        }
-        updatePreviewSelection();
-      });
-
-      previewContainer.appendChild(pageEl);
-    }
-    // expose maps and page sizes for later sync and coordinate mapping
-    previewContainer._groupToInstanceIds = groupToInstanceIds;
-    previewContainer._instanceToGroup = instanceToGroup;
-    previewContainer._pageSizes = pageSizes;
-  }
-
-  // explicit per-instance selection set
-  const selectedInstanceIds = new Set();
-
-  function toggleInstance(instanceId) {
-    if (!instanceId) return;
-    if (selectedInstanceIds.has(instanceId)) selectedInstanceIds.delete(instanceId);
-    else selectedInstanceIds.add(instanceId);
-    // update group checkbox to reflect whether any instance in that group is selected
-    const groupId = previewContainer._instanceToGroup && previewContainer._instanceToGroup[instanceId];
-    if (groupId) {
-      const checkbox = groupsContainer.querySelector(`input[data-group-id="${groupId}"]`);
-      if (checkbox) checkbox.checked = groupMatchesSelected(groupId);
-    }
-    updatePreviewSelection();
-  }
-
-  function groupMatchesSelected(groupId) {
-    const insts = (previewContainer._groupToInstanceIds && previewContainer._groupToInstanceIds[groupId]) || [];
-    return insts.some(iid => selectedInstanceIds.has(iid));
-  }
-
-  function updatePreviewSelection() {
-    if (!previewContainer) return;
-    const checkedGroups = new Set(Array.from(groupsContainer.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.dataset.groupId));
-    previewContainer.querySelectorAll('.preview-box').forEach(box => {
-      const iid = box.dataset.instanceId;
-      const gid = box.dataset.groupId;
-      const selected = (iid && selectedInstanceIds.has(iid)) || checkedGroups.has(gid);
-      box.classList.toggle('preview-box--selected', !!selected);
-    });
-  }
-
-  groupsContainer.addEventListener('change', (e) => {
-    if (!(e.target && e.target.matches('input[type=checkbox]'))) return;
-    const groupId = e.target.dataset.groupId;
-    const checked = e.target.checked;
-    // when a group's checkbox changes, select/deselect all instances in that group
-    const insts = (previewContainer._groupToInstanceIds && previewContainer._groupToInstanceIds[groupId]) || [];
-    for (const iid of insts) {
-      if (checked) selectedInstanceIds.add(iid);
-      else selectedInstanceIds.delete(iid);
-    }
-    updatePreviewSelection();
-  });
 
   // ---------- step 3: mask & download ----------
   backBtn.addEventListener("click", () => {
@@ -319,10 +165,11 @@
 
   maskBtn.addEventListener("click", async () => {
     if (!currentJobId) return;
-    const selectedGroupIds = Array.from(groupsContainer.querySelectorAll("input[type=checkbox]:checked")).map((cb) => cb.dataset.groupId);
-    const selectedInstanceIdsArr = Array.from(selectedInstanceIds);
+    const selected = Array.from(groupsContainer.querySelectorAll("input[type=checkbox]:checked"))
+      .map((cb) => cb.dataset.groupId);
     const instructions = instructionsEl.value.trim();
-    if (selectedGroupIds.length === 0 && selectedInstanceIdsArr.length === 0 && !instructions) {
+
+    if (selected.length === 0 && !instructions) {
       setStatus(maskStatus, "Select at least one field, or describe what to mask.", "error");
       return;
     }
@@ -331,15 +178,10 @@
     maskBtn.disabled = true;
 
     try {
-      const payload = { job_id: currentJobId, instructions };
-      if (selectedInstanceIdsArr.length) payload.instance_ids = selectedInstanceIdsArr;
-      else payload.group_ids = selectedGroupIds;
-      // include any custom-drawn bounding boxes from the preview overlay
-      if (window.customBboxes && window.customBboxes.length) payload.custom_bboxes = window.customBboxes;
       const res = await fetch("/mask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ job_id: currentJobId, group_ids: selected, instructions }),
       });
 
       if (!res.ok) {

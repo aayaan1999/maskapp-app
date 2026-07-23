@@ -6,7 +6,6 @@
 <title>Redactor — Automatic document field masking</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -18,7 +17,7 @@
     <span class="topbar__bracket">[</span>REDACTOR<span class="topbar__bracket">]</span>
   </div>
   <div class="topbar__meta">
-    OCR + AI field detection
+    OCR: <span class="pill{% if 'urd' in ocr_languages or 'ara' in ocr_languages %} pill--on{% endif %}">{{ ocr_languages }}</span>
     {% if ner_active %}<span class="pill pill--on">NER model active</span>{% else %}<span class="pill">regex &amp; layout detection only</span>{% endif %}
   </div>
 </header>
@@ -36,7 +35,7 @@
     </p>
 
     <div id="dropzone" class="dropzone">
-      <input type="file" id="file-input" class="hidden-file-input" accept="application/pdf">
+      <input type="file" id="file-input" accept="application/pdf" hidden>
       <div class="dropzone__icon">＋</div>
       <div class="dropzone__label">Drop a PDF here, or <span class="dropzone__browse">browse</span></div>
       <div class="dropzone__filename" id="file-name"></div>
@@ -51,16 +50,6 @@
     <p class="subhead" id="review-subhead">Select what to mask. Fields are grouped by type — checking one masks every occurrence.</p>
 
     <div id="groups-container" class="groups"></div>
-    <div id="preview-container" class="preview-container"></div>
-    <template id="document-template">
-      <div class="document-panel">
-        <div class="document-panel__header">
-          <span class="document-panel__label"></span>
-          <span class="document-panel__page"></span>
-        </div>
-        <div class="document-panel__fields"></div>
-      </div>
-    </template>
 
     <div class="instructions">
       <label for="instructions" class="instructions__legend">ANYTHING ELSE? DESCRIBE IT IN PLAIN ENGLISH</label>
@@ -83,6 +72,5 @@
 <footer class="footer">Processed in memory · originals deleted immediately after OCR · session data expires after 30 minutes</footer>
 
 <script src="{{ url_for('static', filename='script.js') }}"></script>
-<script src="{{ url_for('static', filename='preview-select.js') }}"></script>
 </body>
 </html>

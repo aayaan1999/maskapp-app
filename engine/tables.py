@@ -9,14 +9,24 @@ band, and emits one instance per (row, column) cell so the UI can offer
 of forcing the user to write a custom rule per row.
 """
 
-import json
 import re
-from .bank_statement import load_bank_statement_config
 from .ocr import pad_bbox
 
-config = load_bank_statement_config()
-COLUMN_KEYWORDS = config.get("header_keywords", {})
-COLUMN_LABELS = config.get("column_labels", {})
+COLUMN_KEYWORDS = {
+    "date": ["date", "value date", "txn date", "transaction date"],
+    "narration": ["narration", "description", "particulars", "details", "remarks"],
+    "reference": ["cheque", "chq", "ref no", "reference", "utr", "instrument"],
+    "debit": ["debit", "withdrawal", " dr "],
+    "credit": ["credit", "deposit", " cr "],
+    "balance": ["balance", "closing balance", "running balance"],
+    "amount": ["amount"],
+}
+COLUMN_LABELS = {
+    "date": "Statement Date", "narration": "Statement Narration",
+    "reference": "Statement Reference No.", "debit": "Statement Debit Amount",
+    "credit": "Statement Credit Amount", "balance": "Statement Balance",
+    "amount": "Statement Amount",
+}
 
 ROW_DATE_START = re.compile(r'^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}$|^\d{1,2}[\-\s][A-Za-z]{3}[\-\s]\d{2,4}$')
 

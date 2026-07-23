@@ -3,12 +3,45 @@ engine/ocr.py
 Converts a PDF into page images and runs Tesseract OCR, normalizing the
 raw parallel-array output into easy-to-work-with `Word` / `Line` objects
 that every detector in this package builds on.
+
+Runs multilingual: English + Urdu + Arabic by default, so GCC identity
+documents (which are commonly bilingual, and whose expat-labor
+paperwork often carries Urdu alongside English/Arabic) are actually
+legible to OCR instead of coming back blank/garbled for the non-Latin
+script. Requires the corresponding Tesseract language packs — see
+Dockerfile (`tesseract-ocr-urd`, `tesseract-ocr-ara`). If they aren't
+installed, this falls back to English-only automatically rather than
+failing the whole request.
 """
 
 import pytesseract
 from pdf2image import convert_from_path
 
 DPI = 300
+PREFERRED_LANGS = ["eng", "urd", "ara"]
+
+_active_lang_string = None
+
+
+def _installed_langs():
+    try:
+        return set(pytesseract.get_languages(config=""))
+    except Exception:
+        return {"eng"}
+
+
+def active_ocr_langs():
+    """
+    Returns the '+'-joined language string Tesseract will actually use,
+    computed once and cached — e.g. 'eng+urd+ara', or just 'eng' if the
+    extra language packs aren't installed in this environment.
+    """
+    global _active_lang_string
+    if _active_lang_string is None:
+        installed = _installed_langs()
+        usable = [l for l in PREFERRED_LANGS if l in installed] or ["eng"]
+        _active_lang_string = "+".join(usable)
+    return _active_lang_string
 
 
 def pdf_to_images(pdf_path: str, dpi: int = DPI):
@@ -24,7 +57,8 @@ def _cluster_into_lines(words):
     boxes) Tesseract frequently assigns words that are visibly on the
     same printed row to different "line" numbers, which silently broke
     every row-aware feature (table headers, same-line name/value
-    pairs). Clustering by vertical center is layout-mode-independent.
+    pairs, and RTL label/value pairing). Clustering by vertical center
+    is layout-mode- and reading-direction-independent.
     """
     if not words:
         return []
@@ -48,9 +82,17 @@ def ocr_page(image):
       words: list of dicts {text,left,top,width,height,right,bottom,conf,line_key}
       lines: list of dicts {key,text,left,top,right,bottom,word_idxs}
     line_key groups words by visual row (see _cluster_into_lines).
+
+    Note on line `text`: words are joined left-to-right by pixel
+    position for *display* purposes only. For a right-to-left Urdu/
+    Arabic line this is not correct reading order — detectors that need
+    to know "does this line mention concept X" or "mask everything on
+    this line except the label" don't care about reading order and are
+    unaffected; only human-facing preview text may read reversed.
     """
     raw = pytesseract.image_to_data(
-        image, output_type=pytesseract.Output.DICT, config="--psm 11 --oem 3"
+        image, output_type=pytesseract.Output.DICT,
+        lang=active_ocr_langs(), config="--psm 11 --oem 3",
     )
     words = []
     n = len(raw["text"])
