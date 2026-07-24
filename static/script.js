@@ -313,6 +313,9 @@
     maskBtn.disabled = true;
 
     try {
+      const payload = { job_id: currentJobId, instructions };
+      if (selectedInstanceIdsArr.length) payload.instance_ids = selectedInstanceIdsArr;
+      else payload.group_ids = selectedGroupIds;
       const res = await fetch("/mask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
